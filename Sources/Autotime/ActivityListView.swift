@@ -1,0 +1,239 @@
+import SwiftUI
+
+struct ActivityListView: View {
+    @EnvironmentObject var model: DayModel
+
+    var body: some View {
+        let visible = model.visible
+        let total = model.searched.reduce(0) { $0 + $1.duration }
+        let selected = visible.reduce(0) { $0 + $1.duration }
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(headerTitle(total: total, selected: selected))
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if model.selection != nil {
+                    Button { model.selection = nil } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Clear Selection")
+                }
+                Spacer(minLength: 12)
+                Picker("", selection: $model.mode) {
+                    ForEach(ViewMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            if visible.isEmpty {
+                EmptyStateView(searching: !model.search.isEmpty)
+            } else if model.mode == .chronological {
+                ChronologicalList(sessions: Sessions.merge(visible).reversed())
+            } else {
+                OutlineList(nodes: TreeBuilder.build(visible, mode: model.mode))
+            }
+        }
+    }
+
+    private func headerTitle(total: TimeInterval, selected: TimeInterval) -> String {
+        var name = "All Activities"
+        if let app = model.appFilter {
+            name = model.appTotals.first { $0.bundleID == app }?.name ?? name
+        }
+        var s = "\(name): \(Format.duration(total))"
+        if model.selection != nil { s += " (\(Format.duration(selected, seconds: true)) selected)" }
+        return s
+    }
+}
+
+struct EmptyStateView: View {
+    var searching: Bool
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: searching ? "magnifyingglass" : "clock.badge.questionmark")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text(searching ? "No matching activities" : "No activities recorded")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct OutlineRow: Identifiable {
+    var node: TreeNode
+    var depth: Int
+    var id: String { node.id }
+}
+
+struct OutlineList: View {
+    @EnvironmentObject var model: DayModel
+    var nodes: [TreeNode]
+
+    var body: some View {
+        List {
+            ForEach(rows()) { row in
+                NodeRow(row: row, expanded: model.expanded.contains(row.id)) { recursive in
+                    let value = !model.expanded.contains(row.id)
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        model.setExpanded(row.node, value, recursive: recursive)
+                    }
+                }
+                .listRowSeparator(.visible)
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func rows() -> [OutlineRow] {
+        var result: [OutlineRow] = []
+        func walk(_ list: [TreeNode], _ depth: Int) {
+            for n in list {
+                result.append(OutlineRow(node: n, depth: depth))
+                if model.expanded.contains(n.id) { walk(n.children, depth + 1) }
+            }
+        }
+        walk(nodes, 0)
+        return result
+    }
+}
+
+struct NodeRow: View {
+    var row: OutlineRow
+    var expanded: Bool
+    var toggle: (Bool) -> Void
+
+    var body: some View {
+        let node = row.node
+        HStack(spacing: 6) {
+            Text(Format.duration(node.duration))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+            Color.clear.frame(width: CGFloat(row.depth) * 18, height: 1)
+            Group {
+                if node.children.isEmpty {
+                    Color.clear
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+            }
+            .frame(width: 14)
+            NodeIcon(kind: node.kind)
+            Text(node.label)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(node.kind == .none ? .secondary : .primary)
+                .help(node.label)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !node.children.isEmpty else { return }
+            toggle(NSEvent.modifierFlags.contains(.option))
+        }
+        .contextMenu { NodeMenu(node: node) }
+    }
+}
+
+struct NodeIcon: View {
+    var kind: NodeKind
+
+    var body: some View {
+        switch kind {
+        case .app(let id):
+            Image(nsImage: AppCatalog.shared.icon(for: id)).resizable().frame(width: 16, height: 16)
+        case .category(let name):
+            Circle().fill(AppCatalog.shared.color(forCategory: name)).frame(width: 11, height: 11).frame(width: 16)
+        case .domain:
+            Image(systemName: "globe").foregroundStyle(.secondary).frame(width: 16)
+        case .url:
+            Image(systemName: "link").foregroundStyle(.secondary).frame(width: 16)
+        case .file(let path):
+            Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+struct NodeMenu: View {
+    var node: TreeNode
+
+    var body: some View {
+        Button("Copy") { copy(node.label) }
+        switch node.kind {
+        case .url(let s):
+            Button("Copy URL") { copy(s) }
+            if let url = URL(string: s) { Button("Open in Browser") { NSWorkspace.shared.open(url) } }
+        case .domain(let host):
+            if let url = URL(string: "https://\(host)") { Button("Open \(host)") { NSWorkspace.shared.open(url) } }
+        case .file(let path):
+            Button("Copy Path") { copy(path) }
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+        case .app(let id):
+            if let url = AppCatalog.shared.appURL(id) { Button("Open \(node.label)") { NSWorkspace.shared.open(url) } }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func copy(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+    }
+}
+
+struct ChronologicalList: View {
+    @EnvironmentObject var model: DayModel
+    var sessions: [Session]
+
+    var body: some View {
+        List(sessions) { s in
+            HStack(spacing: 8) {
+                Text(Format.duration(s.duration))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, alignment: .trailing)
+                Text("\(Format.time.string(from: s.start)) – \(Format.time.string(from: s.end))")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 130, alignment: .leading)
+                Image(nsImage: AppCatalog.shared.icon(for: s.bundleID)).resizable().frame(width: 16, height: 16)
+                Text(s.appName)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(s.label)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+                    .help(s.path.isEmpty ? s.label : s.path)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .onTapGesture { model.selection = s.start...s.end }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+    }
+}
