@@ -188,6 +188,10 @@ struct NodeIcon: View {
             GitHubOwnerAvatar(repo: repo)
         case .ampProject(let name):
             AmpProjectIcon(project: name)
+        case .ampThread(let project, let title):
+            AmpThreadIconView(project: project, title: title)
+        case .ampPuck:
+            AmpPuckIcon()
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
         default:

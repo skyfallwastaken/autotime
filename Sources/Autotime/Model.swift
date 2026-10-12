@@ -9,6 +9,8 @@ enum NodeKind: Hashable {
     case xUser(String)
     case githubRepo(String)
     case ampProject(String)
+    case ampThread(project: String, title: String)
+    case ampPuck
     case file(String)
     case segment
     case title
@@ -269,6 +271,9 @@ enum TreeBuilder {
             var parts = ActivityPath.parts(path: a.path, title: a.title, sharedSegments: shared)
             if a.bundleID == AmpExtractor.bundleID, parts.count >= 2, parts[0].kind == .segment {
                 parts[0].kind = .ampProject(parts[0].label)
+                if parts[1].kind == .segment { parts[1].kind = .ampThread(project: parts[0].label, title: parts[1].label) }
+            } else if a.bundleID == AmpExtractor.bundleID, a.path == AmpExtractor.puck {
+                parts[0].kind = .ampPuck
             }
             for (i, part) in parts.enumerated() {
                 let key = switch part.kind {

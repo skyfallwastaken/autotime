@@ -453,7 +453,9 @@ struct AmpProjectIcon: View {
             .frame(width: 16, height: 16)
             .clipShape(RoundedRectangle(cornerRadius: image == nil ? 0 : 4, style: .continuous))
             .task(id: project) {
-                if let url = AmpProjects.iconURL(project) { image = await WebIcons.shared.image(at: url) }
+                let name = project
+                let url = await Task.detached(priority: .utility) { AmpCatalog.shared.projectIcon(name) }.value
+                if let url { image = await WebIcons.shared.image(at: url) }
             }
     }
 }
