@@ -94,6 +94,15 @@ final class Store {
         sqlite3_step(stmt)
     }
 
+    func updatePath(id: Int64, path: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard let stmt = prepare("UPDATE activity SET path=? WHERE id=?") else { return }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, path, -1, transient)
+        sqlite3_bind_int64(stmt, 2, id)
+        sqlite3_step(stmt)
+    }
+
     func activities(in range: ClosedRange<Date>) -> [Activity] {
         lock.lock(); defer { lock.unlock() }
         guard let stmt = prepare("SELECT id,start,end,bundle,app,title,path FROM activity WHERE end>? AND start<? ORDER BY start") else { return [] }

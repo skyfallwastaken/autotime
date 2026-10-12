@@ -35,10 +35,24 @@ struct AXElement {
     var role: String? { string(kAXRoleAttribute) }
     var title: String? { string(kAXTitleAttribute) }
     var document: String? { string(kAXDocumentAttribute) }
+    var identifier: String? { string(kAXIdentifierAttribute) }
     var children: [AXElement] {
         (value(kAXChildrenAttribute) as? [AXUIElement])?.map(AXElement.init) ?? []
     }
     var parent: AXElement? { element(kAXParentAttribute) }
+
+    func child(identifier: String) -> AXElement? {
+        children.first { $0.identifier == identifier }
+    }
+
+    func prefix(_ length: Int) -> String? {
+        guard let count = value(kAXNumberOfCharactersAttribute) as? Int else { return string(kAXValueAttribute) }
+        var range = CFRange(location: 0, length: min(length, count))
+        guard let param = AXValueCreate(.cfRange, &range) else { return nil }
+        var v: AnyObject?
+        guard AXUIElementCopyParameterizedAttributeValue(ref, kAXStringForRangeParameterizedAttribute as CFString, param, &v) == .success else { return nil }
+        return v as? String
+    }
 
     func set(_ attribute: String, _ value: CFTypeRef) {
         AXUIElementSetAttributeValue(ref, attribute as CFString, value)

@@ -105,7 +105,9 @@ final class Tracker: ObservableObject {
         let info = AccessibilityPermission.isTrusted ? extractor.extract(app: app) : ExtractedInfo(title: "", path: "")
         let key = "\(bundleID)\u{1}\(info.title)\u{1}\(info.path)"
 
-        if let c = current, c.key == key, now.timeIntervalSince(c.end) < interval * 4 {
+        let pathless = "\(bundleID)\u{1}\(info.title)\u{1}"
+        if let c = current, c.key == key || (c.key == pathless && !info.title.isEmpty), now.timeIntervalSince(c.end) < interval * 4 {
+            if c.key != key { Store.shared.updatePath(id: c.id, path: info.path) }
             Store.shared.updateEnd(id: c.id, end: now)
             current = (c.id, key, c.start, now)
         } else {

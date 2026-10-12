@@ -34,7 +34,7 @@ On newer SDKs `@State` is a macro whose plugin only ships with Xcode, so `build.
 | File | Purpose |
 | --- | --- |
 | `Tracker.swift` | 1s sampling loop, idle/lock/sleep handling, video detection via power assertions |
-| `Extractor.swift` | Per-app title/path extraction (Slack, Discord, Teams, Mail, browsers, editors) |
+| `Extractor.swift` | Per-app title/path extraction (Slack, Discord, Teams, Mail, Notes, Messages and other Catalyst apps, GitHub Desktop, browsers incl. Firefox via its session file, editors) |
 | `Accessibility.swift` | Thin AXUIElement wrapper |
 | `Store.swift` | SQLite storage and Timing import |
 | `ScreenTimeImporter.swift` | SEGB/Biome and knowledgeC parsing |
