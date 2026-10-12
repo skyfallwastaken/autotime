@@ -27,6 +27,7 @@ On newer SDKs `@State` is a macro whose plugin only ships with Xcode, so `build.
 - Stats: by hour/day, app share, top websites, folders and documents, conversations, categories
 - Menu bar extra with today's total and pause toggle
 - Idle detection that keeps counting while the frontmost app plays video
+- System helper processes (UserNotificationCenter, SecurityAgent, Dock, CoreServicesUIAgent, …) are never recorded and are hidden from previously stored or imported data (list in `Store.hiddenBundleIDs`)
 - Import from Timing (`~/Library/Application Support/info.eurocomp.Timing2/SQLite.db`) and from Screen Time (Biome `App.InFocus` + `knowledgeC.db`)
 
 ## Layout

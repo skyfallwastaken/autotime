@@ -96,7 +96,7 @@ final class Tracker: ObservableObject {
 
         guard let app else { return }
         let bundleID = app.bundleIdentifier ?? app.executableURL?.lastPathComponent ?? "unknown"
-        if bundleID == "com.apple.loginwindow" || bundleID == "com.apple.ScreenSaver.Engine" {
+        if Store.isHidden(bundleID) {
             closeSegment(at: now)
             return
         }
