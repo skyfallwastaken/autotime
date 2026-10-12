@@ -6,6 +6,7 @@ enum NodeKind: Hashable {
     case app(String)
     case domain(String)
     case url(String)
+    case xUser(String)
     case file(String)
     case segment
     case title
@@ -29,6 +30,9 @@ enum ActivityPath {
         if !path.isEmpty {
             if let url = URL(string: path), let scheme = url.scheme, scheme == "http" || scheme == "https", let host = url.host {
                 result.append(PathComponent(label: host, kind: .domain(host)))
+                if let handle = xHandle(url) {
+                    result.append(PathComponent(label: "@" + handle, kind: .xUser(handle)))
+                }
                 result.append(PathComponent(label: displayURL(url), kind: .url(path)))
             } else if let url = URL(string: path), url.isFileURL {
                 result.append(PathComponent(label: abbreviate(url.path, directory: url.hasDirectoryPath), kind: .file(url.path)))
@@ -45,6 +49,30 @@ enum ActivityPath {
             result.append(PathComponent(label: noInfo, kind: .none))
         }
         return result
+    }
+
+    static let xHosts: Set<String> = ["x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com"]
+    private static let xReserved: Set<String> = [
+        "home", "explore", "notifications", "messages", "i", "search", "settings", "compose", "login", "logout",
+        "signup", "tos", "privacy", "hashtag", "intent", "share", "account", "lists", "bookmarks", "communities",
+        "premium", "jobs", "grok", "topics", "about", "download", "help", "following", "followers", "who_to_follow",
+    ]
+
+    /// The account an x.com URL belongs to (x.com/<handle>/…), or nil for app pages like /home.
+    static func xHandle(_ url: URL) -> String? {
+        guard let host = url.host?.lowercased(), xHosts.contains(host.hasPrefix("www.") ? String(host.dropFirst(4)) : host) else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard let first = parts.first, (1...15).contains(first.count), !xReserved.contains(first.lowercased()),
+              first.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }) else { return nil }
+        return first
+    }
+
+    /// The tweet ID in an x.com/<handle>/status/<id> URL.
+    static func xStatusID(_ s: String) -> String? {
+        guard let url = URL(string: s), xHandle(url) != nil else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 3, parts[1] == "status", parts[2].allSatisfy(\.isNumber) else { return nil }
+        return parts[2]
     }
 
     static func displayURL(_ url: URL) -> String {
@@ -78,6 +106,13 @@ struct TreeNode: Identifiable {
     var bundleID: String
     var duration: TimeInterval
     var children: [TreeNode]
+
+    /// Any tweet under this node, used to look up its author's profile.
+    var firstStatusID: String? {
+        if case .url(let s) = kind, let id = ActivityPath.xStatusID(s) { return id }
+        for c in children { if let id = c.firstStatusID { return id } }
+        return nil
+    }
 }
 
 enum ViewMode: String, CaseIterable, Identifiable {
@@ -130,7 +165,8 @@ enum TreeBuilder {
             node = node.child("a:" + a.bundleID, label: a.appName, kind: .app(a.bundleID), bundleID: a.bundleID)
             node.duration += a.duration
             for (i, part) in ActivityPath.parts(path: a.path, title: a.title).enumerated() {
-                node = node.child("\(i):" + part.label, label: part.label, kind: part.kind, bundleID: a.bundleID)
+                let key = if case .xUser(let h) = part.kind { "@" + h.lowercased() } else { part.label }
+                node = node.child("\(i):" + key, label: part.label, kind: part.kind, bundleID: a.bundleID)
                 node.duration += a.duration
             }
         }

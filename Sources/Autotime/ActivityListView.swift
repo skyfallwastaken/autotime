@@ -119,6 +119,7 @@ struct NodeRow: View {
 
     var body: some View {
         let node = row.node
+        let statusID: String? = if case .xUser = node.kind { node.firstStatusID } else { nil }
         HStack(spacing: 6) {
             Text(Format.duration(node.duration))
                 .monospacedDigit()
@@ -136,12 +137,15 @@ struct NodeRow: View {
                 }
             }
             .frame(width: 14)
-            NodeIcon(kind: node.kind)
+            NodeIcon(kind: node.kind, statusID: statusID)
             Text(node.label)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(node.kind == .none ? .secondary : .primary)
                 .help(node.label)
+            if case .xUser(let handle) = node.kind {
+                XDisplayName(handle: handle, statusID: statusID)
+            }
             Spacer(minLength: 0)
         }
         .padding(.vertical, 3)
@@ -156,6 +160,7 @@ struct NodeRow: View {
 
 struct NodeIcon: View {
     var kind: NodeKind
+    var statusID: String? = nil
 
     var body: some View {
         switch kind {
@@ -163,10 +168,16 @@ struct NodeIcon: View {
             Image(nsImage: AppCatalog.shared.icon(for: id)).resizable().frame(width: 16, height: 16)
         case .category(let name):
             Circle().fill(AppCatalog.shared.color(forCategory: name)).frame(width: 11, height: 11).frame(width: 16)
-        case .domain:
-            Image(systemName: "globe").foregroundStyle(.secondary).frame(width: 16)
-        case .url:
-            Image(systemName: "link").foregroundStyle(.secondary).frame(width: 16)
+        case .domain(let host):
+            FaviconView(host: host, fallback: "globe")
+        case .url(let s):
+            if let host = URL(string: s)?.host {
+                FaviconView(host: host, fallback: "link")
+            } else {
+                Image(systemName: "link").foregroundStyle(.secondary).frame(width: 16)
+            }
+        case .xUser(let handle):
+            XAvatarView(handle: handle, statusID: statusID)
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
         default:
@@ -186,6 +197,8 @@ struct NodeMenu: View {
             if let url = URL(string: s) { Button("Open in Browser") { NSWorkspace.shared.open(url) } }
         case .domain(let host):
             if let url = URL(string: "https://\(host)") { Button("Open \(host)") { NSWorkspace.shared.open(url) } }
+        case .xUser(let handle):
+            if let url = URL(string: "https://x.com/\(handle)") { Button("Open Profile") { NSWorkspace.shared.open(url) } }
         case .file(let path):
             Button("Copy Path") { copy(path) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
