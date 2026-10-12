@@ -57,6 +57,7 @@ final class Store {
         "com.apple.notificationcenterui",
         "com.apple.controlcenter",
         "com.apple.WindowManager",
+        "com.apple.accessibility.universalAccessAuthWarn",
     ].map { $0.lowercased() })
 
     static func isHidden(_ bundleID: String) -> Bool {
