@@ -23,8 +23,6 @@ enum ScreenTimeImporter {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Knowledge/knowledgeC.db")
     }
 
-    static let ignored: Set<String> = ["com.apple.loginwindow", "com.apple.ScreenSaver.Engine", "com.apple.UserNotificationCenter"]
-
     static func load() -> Result<[ImportedInterval], Failure> {
         let biome = biomeIntervals()
         let knowledge = knowledgeIntervals()
@@ -39,7 +37,7 @@ enum ScreenTimeImporter {
                 return b
             }
         }
-        intervals.removeAll { ignored.contains($0.bundleID) || $0.end <= $0.start }
+        intervals.removeAll { Store.isHidden($0.bundleID) || $0.end <= $0.start }
         return intervals.isEmpty ? .failure(.noData) : .success(intervals.sorted { $0.start < $1.start })
     }
 
