@@ -14,6 +14,9 @@ struct StatsView: View {
     @State private var range: StatsRange = .day
     @State private var activities: [Activity] = []
 
+    /// Apps drawn in their own colour in the chart, donut and apps list; the rest are grouped as "Other".
+    private static let colored = 7
+
     private var interval: DateInterval {
         let cal = Calendar.current
         switch range {
@@ -31,66 +34,155 @@ struct StatsView: View {
         let total = data.reduce(0) { $0 + $1.duration }
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack {
-                    Text("Stats")
-                        .font(.title2.weight(.semibold))
-                    Text(rangeTitle)
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Picker("", selection: $range) {
-                        ForEach(StatsRange.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                }
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                if data.isEmpty {
+                    ContentUnavailableView(
+                        model.search.isEmpty ? "No activities recorded" : "No matching activities",
+                        systemImage: model.search.isEmpty ? "clock.badge.questionmark" : "magnifyingglass",
+                        description: Text(rangeTitle)
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                } else {
+                    summary(data, apps: apps, total: total)
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
-                    StatTile(title: "Total Time", value: Format.duration(total))
-                    StatTile(title: range == .day ? "Apps Used" : "Daily Average", value: range == .day ? "\(apps.count)" : Format.duration(total / Double(max(1, activeDays(data)))))
-                    StatTile(title: "Top App", value: apps.first?.name ?? "—")
-                    StatTile(title: "Longest Focus", value: Format.duration(Sessions.byApp(data, gap: 10).map(\.duration).max() ?? 0))
-                }
+                    // Chart and apps side by side while the chart keeps a useful width; when space is tight the donut is dropped before stacking.
+                    ViewThatFits(in: .horizontal) {
+                        chartAndApps(data, apps: apps, total: total, chartWidth: 440, appsWidth: 380, donut: true)
+                        chartAndApps(data, apps: apps, total: total, chartWidth: 360, appsWidth: 300, donut: false)
+                        VStack(spacing: 12) {
+                            chartCard(data, apps: apps)
+                            appsCard(apps, total: total, donut: true)
+                        }
+                    }
 
-                Card(title: range == .day ? "By Hour" : "By Day") {
-                    timeChart(data, apps: apps)
-                        .frame(height: 220)
-                }
-
-                HStack(alignment: .top, spacing: 14) {
-                    Card(title: "Apps") {
-                        donut(apps, total: total)
-                            .frame(height: 240)
-                    }
-                    Card(title: "Top Apps") {
-                        RankList(items: apps.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .app($0.key)) }, total: total)
-                    }
-                }
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14, alignment: .top)], spacing: 14) {
-                    Card(title: "Websites") {
-                        RankList(items: Self.domains(data).prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .domain($0.name)) }, total: total)
-                    }
-                    Card(title: "Folders & Documents") {
-                        RankList(items: Self.files(data).prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .file($0.key)) }, total: total)
-                    }
-                    Card(title: "Conversations & Places") {
-                        RankList(items: Self.places(data).prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .app($0.key)) }, total: total)
-                    }
-                    Card(title: "Categories") {
-                        RankList(items: Self.totals(data) { let c = AppCatalog.shared.category(for: $0.bundleID); return (c, c) }.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .category($0.name)) }, total: total)
+                    MasonryLayout(minColumnWidth: 280, spacing: 12) {
+                        detailCards(data, total: total)
                     }
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 20)
         }
         .onAppear(perform: load)
         .onChange(of: range) { load() }
         .onChange(of: anchor) { load() }
         .onReceive(NotificationCenter.default.publisher(for: .storeDidChange)) { _ in
             if interval.contains(Date()) { load() }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Stats")
+                .font(.title2.weight(.semibold))
+            Text(rangeTitle)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            Picker("", selection: $range) {
+                ForEach(StatsRange.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
+    }
+
+    private func summary(_ data: [Activity], apps: [Total], total: TimeInterval) -> some View {
+        let days = activeDays(data)
+        let focus = Sessions.byApp(data, gap: 10).max { $0.duration < $1.duration }
+        let categories = Set(data.map { AppCatalog.shared.category(for: $0.bundleID) }).count
+        let span: String = {
+            guard let first = data.map(\.start).min(), let last = data.map(\.end).max() else { return "" }
+            return "\(Format.time.string(from: first)) – \(Format.time.string(from: last))"
+        }()
+
+        return HStack(alignment: .top, spacing: 0) {
+            Metric(title: "Total Time", value: Format.duration(total),
+                   detail: range == .day ? span : "\(apps.count) apps")
+            Divider().padding(.horizontal, 14)
+            if range == .day {
+                Metric(title: "Apps Used", value: "\(apps.count)", detail: "\(categories) \(categories == 1 ? "category" : "categories")")
+            } else {
+                Metric(title: "Daily Average", value: Format.duration(total / Double(max(1, days))), detail: "\(days) active \(days == 1 ? "day" : "days")")
+            }
+            Divider().padding(.horizontal, 14)
+            Metric(title: "Top App", value: apps.first?.name ?? "—",
+                   detail: apps.first.map { "\(Format.duration($0.duration)) · \(Format.percent($0.duration, of: total))" } ?? "",
+                   icon: apps.first?.key)
+            Divider().padding(.horizontal, 14)
+            Metric(title: "Longest Focus", value: Format.duration(focus?.duration ?? 0), detail: focus?.appName ?? "")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
+
+    private func chartAndApps(_ data: [Activity], apps: [Total], total: TimeInterval, chartWidth: CGFloat, appsWidth: CGFloat, donut: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            chartCard(data, apps: apps)
+                .frame(minWidth: chartWidth, idealWidth: chartWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            appsCard(apps, total: total, donut: donut)
+                .frame(width: appsWidth)
+                .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func chartCard(_ data: [Activity], apps: [Total]) -> some View {
+        Card(title: range == .day ? "By Hour" : "By Day") {
+            timeChart(data, apps: apps)
+                .frame(minHeight: 180, idealHeight: 180, maxHeight: .infinity)
+        }
+    }
+
+    private func appsCard(_ apps: [Total], total: TimeInterval, donut showDonut: Bool) -> some View {
+        let rest = apps.dropFirst(Self.colored)
+        var items = apps.prefix(Self.colored).map {
+            RankItem(label: $0.name, duration: $0.duration, icon: .app($0.key), tint: AppCatalog.shared.color(for: $0.key))
+        }
+        if !rest.isEmpty {
+            items.append(RankItem(label: "Other (\(rest.count) \(rest.count == 1 ? "app" : "apps"))", duration: rest.reduce(0) { $0 + $1.duration }, icon: .none, tint: .gray))
+        }
+        return Card(title: "Apps") {
+            HStack(alignment: .center, spacing: 14) {
+                if showDonut {
+                    donut(items, total: total)
+                        .frame(width: 108, height: 108)
+                }
+                RankList(items: items, total: total, relativeToTotal: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func detailCards(_ data: [Activity], total: TimeInterval) -> some View {
+        let categories = Self.totals(data) { let c = AppCatalog.shared.category(for: $0.bundleID); return (c, c) }
+        let domains = Self.domains(data)
+        let files = Self.files(data)
+        let places = Self.places(data)
+
+        Card(title: "Categories") {
+            RankList(items: categories.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .category($0.name), tint: AppCatalog.shared.color(forCategory: $0.name)) }, total: total)
+        }
+        if !domains.isEmpty {
+            Card(title: "Websites") {
+                RankList(items: domains.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .domain($0.name)) }, total: total)
+            }
+        }
+        if !files.isEmpty {
+            Card(title: "Folders & Documents") {
+                RankList(items: files.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .file($0.key)) }, total: total)
+            }
+        }
+        if !places.isEmpty {
+            Card(title: "Conversations & Places") {
+                RankList(items: places.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .app($0.key)) }, total: total)
+            }
         }
     }
 
@@ -158,24 +250,58 @@ struct StatsView: View {
 
     @ViewBuilder
     private func timeChart(_ data: [Activity], apps: [Total]) -> some View {
-        let top = Array(apps.prefix(6))
+        let top = Array(apps.prefix(Self.colored))
         let topIDs = Set(top.map(\.key))
-        let names = top.map(\.name) + (apps.count > 6 ? ["Other"] : [])
-        let colors = top.map { AppCatalog.shared.color(for: $0.key) } + (apps.count > 6 ? [Color.gray] : [])
+        let other = apps.count > Self.colored
+        let names = top.map(\.name) + (other ? ["Other"] : [])
+        let colors = top.map { AppCatalog.shared.color(for: $0.key) } + (other ? [Color.gray] : [])
         let unit: Calendar.Component = range == .day ? .hour : .day
         let buckets = Self.buckets(data, unit: unit, name: { topIDs.contains($0.bundleID) ? $0.appName : "Other" })
+        let suffix = range == .day ? "m" : "h"
 
         Chart(buckets) { b in
             BarMark(
                 x: .value("Time", b.start, unit: unit),
-                y: .value("Minutes", range == .day ? b.minutes : b.minutes / 60)
+                y: .value(range == .day ? "Minutes" : "Hours", range == .day ? b.minutes : b.minutes / 60)
             )
             .foregroundStyle(by: .value("App", b.app))
         }
         .chartForegroundStyleScale(domain: names, range: colors)
-        .chartXScale(domain: interval.start...interval.end)
-        .chartYAxisLabel(range == .day ? "minutes" : "hours")
-        .chartLegend(position: .bottom, alignment: .leading)
+        .chartXScale(domain: chartDomain(data))
+        .chartXAxis {
+            if range == .week {
+                AxisMarks(values: .stride(by: .day)) { _ in
+                    AxisGridLine()
+                    AxisValueLabel(format: .dateTime.weekday(.abbreviated).day(), centered: true)
+                }
+            } else {
+                AxisMarks()
+            }
+        }
+        .chartYAxis {
+            AxisMarks { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let v = value.as(Double.self) { Text("\(v.formatted())\(suffix)") }
+                }
+            }
+        }
+        .chartLegend(.hidden)
+    }
+
+    /// Days show only the hours with activity (at least eight), so bars aren't squeezed into one corner of a 24-hour axis.
+    private func chartDomain(_ data: [Activity]) -> ClosedRange<Date> {
+        let cal = Calendar.current
+        guard range == .day, let first = data.map(\.start).min(), let last = data.map(\.end).max(),
+              var lo = cal.dateInterval(of: .hour, for: first)?.start,
+              var hi = cal.dateInterval(of: .hour, for: last.addingTimeInterval(-1))?.end
+        else { return interval.start...interval.end }
+        let minSpan: TimeInterval = 8 * 3600
+        if hi.timeIntervalSince(lo) < minSpan {
+            hi = min(interval.end, lo.addingTimeInterval(minSpan))
+            lo = max(interval.start, hi.addingTimeInterval(-minSpan))
+        }
+        return lo...hi
     }
 
     private static func buckets(_ data: [Activity], unit: Calendar.Component, name: (Activity) -> String) -> [Bucket] {
@@ -195,42 +321,49 @@ struct StatsView: View {
         return dict.values.sorted { $0.start < $1.start }
     }
 
-    @ViewBuilder
-    private func donut(_ apps: [Total], total: TimeInterval) -> some View {
-        let top = Array(apps.prefix(8))
-        let rest = apps.dropFirst(8).reduce(0) { $0 + $1.duration }
-        let slices = top.map { ($0.name, $0.duration, AppCatalog.shared.color(for: $0.key)) } + (rest > 0 ? [("Other", rest, Color.gray)] : [])
-        Chart(slices, id: \.0) { slice in
-            SectorMark(angle: .value("Time", slice.1), innerRadius: .ratio(0.6), angularInset: 1.2)
-                .cornerRadius(3)
-                .foregroundStyle(slice.2)
+    private func donut(_ items: [RankItem], total: TimeInterval) -> some View {
+        Chart(items) { item in
+            SectorMark(angle: .value("Time", item.duration), innerRadius: .ratio(0.64), angularInset: 1)
+                .cornerRadius(2)
+                .foregroundStyle(item.tint)
         }
         .chartBackground { _ in
-            VStack(spacing: 2) {
-                Text(Format.duration(total)).font(.title2.weight(.semibold))
-                Text("total").font(.caption).foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                Text(Format.duration(total)).font(.headline).monospacedDigit()
+                Text("total").font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
 }
 
-struct StatTile: View {
+struct Metric: View {
     var title: String
     var value: String
+    var detail: String
+    var icon: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title2.weight(.semibold))
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(nsImage: AppCatalog.shared.icon(for: icon)).resizable().frame(width: 18, height: 18)
+                }
+                Text(value)
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Text(detail.isEmpty ? " " : detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .truncationMode(.tail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 }
 
@@ -239,14 +372,14 @@ struct Card<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.headline)
             content
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 }
 
@@ -255,40 +388,79 @@ struct RankItem: Identifiable {
     var label: String
     var duration: TimeInterval
     var icon: NodeKind
+    var tint: Color = .accentColor
 }
 
+/// One line per item with its share drawn as a bar behind the row.
 struct RankList: View {
     var items: [RankItem]
     var total: TimeInterval
+    /// Bars show share of the total instead of length relative to the largest item.
+    var relativeToTotal = false
 
     var body: some View {
-        if items.isEmpty {
-            Text("Nothing yet")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 60)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(items) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            NodeIcon(kind: item.icon)
-                            Text(item.label)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer()
-                            Text(Format.duration(item.duration))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        GeometryReader { geo in
-                            Capsule()
-                                .fill(Color.accentColor.opacity(0.6))
-                                .frame(width: max(2, geo.size.width * CGFloat(item.duration / max(1, items.first?.duration ?? 1))))
-                        }
-                        .frame(height: 3)
+        let scale = max(1, relativeToTotal ? total : items.first?.duration ?? 1)
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(items) { item in
+                HStack(spacing: 6) {
+                    if item.icon == NodeKind.none {
+                        Image(systemName: "ellipsis.circle.fill").foregroundStyle(.tertiary).frame(width: 16)
+                    } else {
+                        NodeIcon(kind: item.icon)
+                    }
+                    Text(item.label)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(item.label)
+                    Spacer(minLength: 8)
+                    Text(Format.percent(item.duration, of: total))
+                        .foregroundStyle(.tertiary)
+                    Text(Format.duration(item.duration))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 46, alignment: .trailing)
+                }
+                .monospacedDigit()
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(alignment: .leading) {
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(item.tint.opacity(0.15))
+                            .frame(width: max(4, geo.size.width * CGFloat(item.duration / scale)))
                     }
                 }
             }
+        }
+    }
+}
+
+/// Columns of at least `minColumnWidth`; each card goes into the currently shortest column so cards of different heights leave no gaps.
+struct MasonryLayout: Layout {
+    var minColumnWidth: CGFloat
+    var spacing: CGFloat
+
+    private func frames(_ subviews: Subviews, width: CGFloat) -> (frames: [CGRect], height: CGFloat) {
+        let count = max(1, min(subviews.count, Int((width + spacing) / (minColumnWidth + spacing))))
+        let columnWidth = (width - spacing * CGFloat(count - 1)) / CGFloat(count)
+        var heights = Array(repeating: CGFloat(0), count: count)
+        var frames: [CGRect] = []
+        for subview in subviews {
+            let column = heights.indices.min { heights[$0] < heights[$1] }!
+            let height = subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
+            frames.append(CGRect(x: CGFloat(column) * (columnWidth + spacing), y: heights[column], width: columnWidth, height: height))
+            heights[column] += height + spacing
+        }
+        return (frames, max(0, (heights.max() ?? 0) - spacing))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minColumnWidth
+        return CGSize(width: width, height: frames(subviews, width: width).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, frames(subviews, width: bounds.width).frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), proposal: ProposedViewSize(frame.size))
         }
     }
 }

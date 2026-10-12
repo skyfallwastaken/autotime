@@ -243,6 +243,12 @@ enum Format {
         return "<1m"
     }
 
+    static func percent(_ part: TimeInterval, of total: TimeInterval) -> String {
+        guard total > 0 else { return "" }
+        let p = part / total * 100
+        return p < 1 ? "<1%" : "\(Int(p.rounded()))%"
+    }
+
     static let time: DateFormatter = {
         let f = DateFormatter()
         f.timeStyle = .short

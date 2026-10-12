@@ -36,6 +36,33 @@ final class Store {
     private let lock = NSLock()
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+    /// System helper processes that can become frontmost but aren't apps people work in (based on Timing's skip list).
+    /// They are never recorded, and rows already stored or imported are dropped on read, so they never reach lists or totals.
+    /// Matched case-insensitively against bundle IDs and the executable names stored for bundle-less processes.
+    static let hiddenBundleIDs: Set<String> = Set([
+        "com.apple.loginwindow",
+        "com.apple.ScreenSaver.Engine",
+        "com.apple.UserNotificationCenter",
+        "com.apple.coreservices.uiagent",
+        "com.apple.SecurityAgent",
+        "SecurityAgent",
+        "com.apple.systemuiserver",
+        "com.apple.dock",
+        "com.apple.UnmountAssistantAgent",
+        "com.apple.frameworks.diskimages.uiagent",
+        "com.apple.NetAuthAgent",
+        "com.apple.FollowUpUI",
+        "com.apple.WebKit.PluginHost",
+        "com.apple.AutomatorRunner",
+        "com.apple.notificationcenterui",
+        "com.apple.controlcenter",
+        "com.apple.WindowManager",
+    ].map { $0.lowercased() })
+
+    static func isHidden(_ bundleID: String) -> Bool {
+        hiddenBundleIDs.contains(bundleID.lowercased())
+    }
+
     static var directory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("Autotime", isDirectory: true)
@@ -111,6 +138,7 @@ final class Store {
         sqlite3_bind_double(stmt, 2, range.upperBound.timeIntervalSince1970)
         var result: [Activity] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
+            if Store.isHidden(text(stmt, 3)) { continue }
             let a = Activity(
                 id: sqlite3_column_int64(stmt, 0),
                 start: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1)),
@@ -234,6 +262,7 @@ final class Store {
             }
             if bundle.isEmpty { bundle = app.isEmpty ? "unknown" : app }
             if app.isEmpty { app = bundle }
+            if Store.isHidden(bundle) { continue }
             let title = Extractor.cleanTitle(text(read, 4), appName: app)
             sqlite3_reset(insert)
             sqlite3_bind_double(insert, 1, sqlite3_column_double(read, 0))
