@@ -3,6 +3,7 @@ import ServiceManagement
 
 struct SettingsView: View {
     @EnvironmentObject var tracker: Tracker
+    @ObservedObject private var updater = Updater.shared
     @AppStorage("idleMinutes") private var idleMinutes = 3.0
     @AppStorage("countVideo") private var countVideo = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -46,6 +47,13 @@ struct SettingsView: View {
                 Text("Accessibility lets Autotime read window titles, browser URLs, document paths and Slack or Discord channels. Everything stays on this Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: $updater.automaticallyChecksForUpdates)
+                LabeledContent("Version \(Updater.version)") {
+                    CheckForUpdatesButton()
+                }
             }
 
             Section("Data") {

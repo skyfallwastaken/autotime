@@ -1,0 +1,82 @@
+# Builds, signs and packages Autotime, then publishes a GitHub Release with the DMG and the Sparkle appcast.
+# Trigger by pushing a tag (git tag v1.2.0 && git push origin v1.2.0) or from the Actions tab with a version.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      REPO_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Version
+        run: |
+          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          # Sparkle compares CFBundleVersion, so it must only ever grow.
+          echo "BUILD_NUMBER=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
+
+      - name: Import signing certificate
+        env:
+          P12: ${{ secrets.SIGNING_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -p codesigning "$KEYCHAIN" | awk -F'"' '/"/ {print $2; exit}')
+          test -n "$IDENTITY"
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build app
+        run: ./build.sh
+
+      - name: Build DMG
+        run: scripts/make-dmg.sh
+
+      - name: Sign update and write appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          mkdir -p build/release
+          cp "build/Autotime-$VERSION.dmg" build/release/
+          echo "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "$REPO_URL/releases/download/$TAG/" \
+            --link "$REPO_URL/releases/tag/$TAG" \
+            -o build/release/appcast.xml build/release
+          cat build/release/appcast.xml
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "build/release/Autotime-$VERSION.dmg" build/release/appcast.xml \
+            --title "Autotime $VERSION" --target "$GITHUB_SHA" --generate-notes

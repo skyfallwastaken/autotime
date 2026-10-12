@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AccessibilityPermission.prompt()
         }
         Tracker.shared.start()
+        _ = Updater.shared
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -33,6 +34,9 @@ struct AutotimeApp: App {
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton()
+            }
             CommandGroup(after: .toolbar) {
                 Button("Previous Day") { model.shift(-1) }.keyboardShortcut(.leftArrow, modifiers: [.command])
                 Button("Next Day") { model.shift(1) }.keyboardShortcut(.rightArrow, modifiers: [.command])
