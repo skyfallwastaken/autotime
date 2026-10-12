@@ -9,7 +9,7 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.autotime.Autotime</string>
+    <string>com.mahadk.autotime</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

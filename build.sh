@@ -31,8 +31,11 @@ fi
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # A stable identity keeps the Accessibility permission across rebuilds and Sparkle updates.
+# No hardened runtime: its library validation only loads frameworks signed with the app's Apple Team ID,
+# and a self-signed certificate has none, so Sparkle.framework would be rejected at launch.
+# Add `--options runtime` back when signing with a Developer ID for notarization.
 IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -p codesigning -v | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
-SIGN=(codesign --force --sign "${IDENTITY:--}" --options runtime)
+SIGN=(codesign --force --sign "${IDENTITY:--}")
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 "${SIGN[@]}" "$SPARKLE/XPCServices/Installer.xpc"
 "${SIGN[@]}" --preserve-metadata=entitlements "$SPARKLE/XPCServices/Downloader.xpc"

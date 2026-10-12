@@ -58,6 +58,15 @@ jobs:
       - name: Build app
         run: ./build.sh
 
+      # Catches launch-time failures such as a framework dyld refuses to load.
+      - name: Smoke test launch
+        run: |
+          csrutil status || true
+          open build/Autotime.app
+          sleep 10
+          pgrep -x Autotime
+          pkill -x Autotime
+
       - name: Build DMG
         run: scripts/make-dmg.sh
 

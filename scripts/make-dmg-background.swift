@@ -49,28 +49,23 @@ func render(scale: CGFloat) -> Data {
         .paragraphStyle: center,
     ]).draw(in: NSRect(x: 0, y: 308, width: size.width, height: 20))
 
-    // Arrow from the app to Applications.
-    let arrow = NSBezierPath()
-    arrow.move(to: NSPoint(x: 262, y: 196))
-    arrow.curve(to: NSPoint(x: 370, y: 196), controlPoint1: NSPoint(x: 296, y: 222), controlPoint2: NSPoint(x: 336, y: 222))
-    arrow.lineWidth = 4
-    arrow.lineCapStyle = .round
-    let head = NSBezierPath()
-    head.move(to: NSPoint(x: 356, y: 209))
-    head.line(to: NSPoint(x: 372, y: 194))
-    head.line(to: NSPoint(x: 352, y: 189))
-    head.lineWidth = 4
-    head.lineCapStyle = .round
-    head.lineJoinStyle = .round
-    NSGraphicsContext.current!.cgContext.saveGState()
-    let stroke = NSBezierPath()
-    stroke.append(arrow)
-    stroke.append(head)
-    let outline = stroke.cgPath.copy(strokingWithWidth: 4, lineCap: .round, lineJoin: .round, miterLimit: 10)
-    NSGraphicsContext.current!.cgContext.addPath(outline)
-    NSGraphicsContext.current!.cgContext.clip()
-    NSGradient(colors: [blue, purple])!.draw(in: NSRect(x: 250, y: 180, width: 130, height: 50), angle: 0)
-    NSGraphicsContext.current!.cgContext.restoreGState()
+    // Arrow from the app to Applications; the head is aimed along the curve's end tangent so the two meet cleanly.
+    let start = NSPoint(x: 262, y: 196), end = NSPoint(x: 370, y: 196)
+    let control1 = NSPoint(x: 296, y: 222), control2 = NSPoint(x: 336, y: 222)
+    let path = CGMutablePath()
+    path.move(to: start)
+    path.addCurve(to: end, control1: control1, control2: control2)
+    let back = atan2(control2.y - end.y, control2.x - end.x)
+    for spread in [-0.6, 0.6] {
+        path.move(to: end)
+        path.addLine(to: CGPoint(x: end.x + 14 * cos(back + spread), y: end.y + 14 * sin(back + spread)))
+    }
+    let context = NSGraphicsContext.current!.cgContext
+    context.saveGState()
+    context.addPath(path.copy(strokingWithWidth: 4, lineCap: .round, lineJoin: .round, miterLimit: 10))
+    context.clip()
+    NSGradient(colors: [blue, purple])!.draw(in: NSRect(x: 250, y: 176, width: 130, height: 56), angle: 0)
+    context.restoreGState()
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
