@@ -119,7 +119,6 @@ struct NodeRow: View {
 
     var body: some View {
         let node = row.node
-        let statusID: String? = if case .xUser = node.kind { node.firstStatusID } else { nil }
         HStack(spacing: 6) {
             Text(Format.duration(node.duration))
                 .monospacedDigit()
@@ -137,14 +136,14 @@ struct NodeRow: View {
                 }
             }
             .frame(width: 14)
-            NodeIcon(kind: node.kind, statusID: statusID)
+            NodeIcon(kind: node.kind)
             Text(node.label)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(node.kind == .none ? .secondary : .primary)
                 .help(node.label)
             if case .xUser(let handle) = node.kind {
-                XDisplayName(handle: handle, statusID: statusID)
+                XDisplayName(handle: handle)
             }
             Spacer(minLength: 0)
         }
@@ -160,7 +159,6 @@ struct NodeRow: View {
 
 struct NodeIcon: View {
     var kind: NodeKind
-    var statusID: String? = nil
 
     var body: some View {
         switch kind {
@@ -177,7 +175,7 @@ struct NodeIcon: View {
                 Image(systemName: "link").foregroundStyle(.secondary).frame(width: 16)
             }
         case .xUser(let handle):
-            XAvatarView(handle: handle, statusID: statusID)
+            XAvatarView(handle: handle)
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
         default:

@@ -7,27 +7,40 @@ struct XProfile: Codable {
     var image: Data?
 }
 
+struct Favicon {
+    /// Single-colour glyphs on a transparent background (GitHub, X, Vercel…) vanish against a matching
+    /// background, so they are inverted when they would clash with the current appearance.
+    enum Tone { case colorful, darkGlyph, lightGlyph }
+
+    var image: NSImage
+    var tone: Tone
+}
+
 /// Favicons for visited sites and avatars for X users, loaded once and cached on disk.
 /// Favicons come from the browsers' own favicon databases when possible, so most never touch the network.
+/// Nothing is sent to third parties: icons come from the browser or the site itself, X profiles from x.com.
 @MainActor
 final class WebIcons {
     static let shared = WebIcons()
 
-    private var favicons: [String: Task<NSImage?, Never>] = [:]
+    private var favicons: [String: Task<Favicon?, Never>] = [:]
     private var profiles: [String: Task<XProfile?, Never>] = [:]
 
-    func favicon(host: String) async -> NSImage? {
+    func favicon(host: String) async -> Favicon? {
         let host = host.lowercased()
         if let t = favicons[host] { return await t.value }
-        let t = Task.detached(priority: .utility) { Self.loadFavicon(host).flatMap { NSImage(data: $0) } }
+        let t = Task.detached(priority: .utility) { () -> Favicon? in
+            guard let data = await Self.loadFavicon(host), let image = NSImage(data: data) else { return nil }
+            return Favicon(image: image, tone: Self.tone(of: image))
+        }
         favicons[host] = t
         return await t.value
     }
 
-    func profile(handle: String, statusID: String?) async -> XProfile? {
+    func profile(handle: String) async -> XProfile? {
         let handle = handle.lowercased()
         if let t = profiles[handle] { return await t.value }
-        let t = Task.detached(priority: .utility) { await Self.loadProfile(handle, statusID: statusID) }
+        let t = Task.detached(priority: .utility) { await Self.loadProfile(handle) }
         profiles[handle] = t
         return await t.value
     }
@@ -58,10 +71,12 @@ final class WebIcons {
 
     // MARK: Favicons
 
-    private nonisolated static func loadFavicon(_ host: String) -> Data? {
+    private nonisolated static func loadFavicon(_ host: String) async -> Data? {
         let name = "favicon-\(safeName(host))"
         if let data = cached(name, maxAge: 30 * 86400) { return data }
-        guard let data = browserFavicon(host) ?? fetchFavicon(host) else { return nil }
+        var data = browserFavicon(host)
+        if data == nil { data = await fetchFavicon(host) }
+        guard let data else { return nil }
         store(data, as: name)
         return data
     }
@@ -111,112 +126,181 @@ final class WebIcons {
         return nil
     }
 
-    private nonisolated static func fetchFavicon(_ host: String) -> Data? {
-        guard let home = URL(string: "https://\(host)/") else { return nil }
+    private nonisolated static func fetchFavicon(_ host: String) async -> Data? {
+        guard isPublicHost(host), let home = URL(string: "https://\(host)/") else { return nil }
         var candidates: [URL] = []
-        if let html = get(home).flatMap({ String(data: $0.prefix(200_000), encoding: .utf8) ?? String(data: $0.prefix(200_000), encoding: .isoLatin1) }) {
+        if let data = await get(home, limit: 512 * 1024),
+           let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) {
             candidates = iconLinks(in: html, base: home)
         }
         candidates.append(home.appendingPathComponent("favicon.ico"))
-        for url in candidates {
-            if let data = get(url), NSImage(data: data) != nil { return data }
+        for url in candidates.prefix(4) {
+            if let data = await get(url, limit: 1024 * 1024), NSImage(data: data) != nil { return data }
         }
         return nil
     }
 
-    /// `<link rel="icon" href="…">` targets in a page, largest declared size first.
+    /// `<link rel="icon" href="…">` targets in a page, best size first. Dark-scheme variants are skipped; inversion handles those.
     private nonisolated static func iconLinks(in html: String, base: URL) -> [URL] {
         guard let tag = try? NSRegularExpression(pattern: "<link\\b[^>]*>", options: .caseInsensitive) else { return [] }
-        func attr(_ name: String, _ s: String) -> String? {
-            let pattern = "\\b\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"
-            guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-                  let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
-            for i in 1...3 { if let r = Range(m.range(at: i), in: s) { return String(s[r]) } }
-            return nil
-        }
         var links: [(URL, Int)] = []
         for m in tag.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
             guard let r = Range(m.range, in: html) else { continue }
             let s = String(html[r])
-            guard let rel = attr("rel", s)?.lowercased(), rel.contains("icon"), !rel.contains("mask"),
-                  let href = attr("href", s)?.replacingOccurrences(of: "&amp;", with: "&"),
-                  let url = URL(string: href, relativeTo: base)?.absoluteURL, !href.hasSuffix(".svg") else { continue }
-            let size = attr("sizes", s).flatMap { Int($0.lowercased().split(separator: "x").first ?? "") } ?? 16
+            guard let rel = attribute("rel", in: s)?.lowercased(), rel.contains("icon"), !rel.contains("mask"),
+                  !(attribute("media", in: s)?.contains("dark") ?? false),
+                  let href = attribute("href", in: s)?.replacingOccurrences(of: "&amp;", with: "&"), !href.hasSuffix(".svg"),
+                  let url = URL(string: href, relativeTo: base)?.absoluteURL else { continue }
+            let size = attribute("sizes", in: s).flatMap { Int($0.lowercased().split(separator: "x").first ?? "") } ?? 16
             links.append((url, size))
         }
         // Prefer icons close to 64px: big enough for Retina, small enough to download quickly.
         return links.sorted { abs($0.1 - 64) < abs($1.1 - 64) }.map(\.0)
     }
 
+    private nonisolated static func attribute(_ name: String, in tag: String) -> String? {
+        let pattern = "\\b\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"
+        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let m = re.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) else { return nil }
+        for i in 1...3 { if let r = Range(m.range(at: i), in: tag) { return String(tag[r]) } }
+        return nil
+    }
+
+    private nonisolated static func tone(of image: NSImage) -> Favicon.Tone {
+        let size = 32
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return .colorful }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+        NSGraphicsContext.restoreGraphicsState()
+
+        var transparent = 0, opaque = 0, saturated = 0
+        var brightness = 0.0
+        for x in 0..<size {
+            for y in 0..<size {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                if c.alphaComponent < 0.1 { transparent += 1; continue }
+                guard c.alphaComponent > 0.5 else { continue }
+                opaque += 1
+                brightness += c.brightnessComponent
+                if c.saturationComponent > 0.2 && c.brightnessComponent > 0.2 { saturated += 1 }
+            }
+        }
+        // A glyph needs a transparent background to show through, and almost no colour of its own.
+        guard opaque > 0, transparent > size * size / 5, Double(saturated) / Double(opaque) < 0.05 else { return .colorful }
+        let mean = brightness / Double(opaque)
+        if mean < 0.3 { return .darkGlyph }
+        if mean > 0.85 { return .lightGlyph }
+        return .colorful
+    }
+
     // MARK: X profiles
 
-    private nonisolated static func loadProfile(_ handle: String, statusID: String?) async -> XProfile? {
-        let name = "x-\(safeName(handle)).json"
+    private nonisolated static func loadProfile(_ handle: String) async -> XProfile? {
+        let name = "xprofile-\(safeName(handle)).json"
         if let data = cached(name, maxAge: 7 * 86400), let p = try? JSONDecoder().decode(XProfile.self, from: data) { return p }
-        var profile = statusID.flatMap { tweetAuthor(handle, statusID: $0) }
-        if profile == nil, let url = URL(string: "https://unavatar.io/x/\(handle)?fallback=false"), let data = get(url), NSImage(data: data) != nil {
-            profile = XProfile(name: nil, image: data)
-        }
-        guard let profile else { return nil }
+        guard let profile = await profilePage(handle) else { return nil }
         if let data = try? JSONEncoder().encode(profile) { store(data, as: name) }
         return profile
     }
 
-    /// The public embed endpoint behind platform.twitter.com widgets returns a tweet with its author, no login needed.
-    private nonisolated static func tweetAuthor(_ handle: String, statusID: String) -> XProfile? {
-        guard let id = Double(statusID),
-              let url = URL(string: "https://cdn.syndication.twimg.com/tweet-result?id=\(statusID)&lang=en&token=\(syndicationToken(id))"),
-              let data = get(url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let user = json["user"] as? [String: Any],
-              (user["screen_name"] as? String)?.lowercased() == handle else { return nil }
-        var image: Data?
-        if let s = user["profile_image_url_https"] as? String,
-           let avatar = URL(string: s.replacingOccurrences(of: "_normal.", with: "_bigger.")) {
-            image = get(avatar)
+    /// x.com serves Open Graph tags (avatar, "Name (@handle) on X") on profile pages for link previews, no login needed.
+    private nonisolated static func profilePage(_ handle: String) async -> XProfile? {
+        guard let page = URL(string: "https://x.com/\(handle)"),
+              let data = await get(page, limit: 1024 * 1024),
+              let html = String(data: data, encoding: .utf8) else { return nil }
+        func meta(_ property: String) -> String? {
+            guard let re = try? NSRegularExpression(pattern: "<meta\\b[^>]*property=\"\(property)\"[^>]*>", options: .caseInsensitive),
+                  let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                  let r = Range(m.range, in: html) else { return nil }
+            return attribute("content", in: String(html[r]))
         }
-        return XProfile(name: user["name"] as? String, image: image)
+        var name: String?
+        if let title = meta("og:title"), let r = title.range(of: " (@", options: .backwards) {
+            name = decodeEntities(String(title[..<r.lowerBound]))
+        }
+        var image: Data?
+        if let s = meta("og:image"), let url = URL(string: s.replacingOccurrences(of: "_200x200.", with: "_bigger.")),
+           ["pbs.twimg.com", "abs.twimg.com"].contains(url.host ?? "") {
+            image = await get(url, limit: 1024 * 1024)
+        }
+        guard name != nil || image != nil else { return nil }
+        return XProfile(name: name, image: image)
     }
 
-    /// The endpoint expects a token derived from the tweet ID: (id / 1e15 · π) in base 36, without zeros or the point.
-    private nonisolated static func syndicationToken(_ id: Double) -> String {
-        var value = id / 1e15 * Double.pi
-        let digits = Array("0123456789abcdefghijklmnopqrstuvwxyz")
-        var integer = floor(value)
-        value -= integer
-        var whole = ""
-        repeat {
-            whole = String(digits[Int(integer.truncatingRemainder(dividingBy: 36))]) + whole
-            integer = floor(integer / 36)
-        } while integer > 0
-        var fraction = ""
-        for _ in 0..<11 where value > 0 {
-            value *= 36
-            let d = Int(value)
-            fraction.append(digits[d])
-            value -= Double(d)
+    private nonisolated static func decodeEntities(_ s: String) -> String {
+        guard s.contains("&"), let re = try? NSRegularExpression(pattern: "&(#x[0-9a-fA-F]+|#[0-9]+|amp|quot|apos|lt|gt);") else { return s }
+        var result = s
+        for m in re.matches(in: s, range: NSRange(s.startIndex..., in: s)).reversed() {
+            guard let whole = Range(m.range, in: result), let body = Range(m.range(at: 1), in: result) else { continue }
+            let entity = String(result[body])
+            let scalar: UnicodeScalar? = switch entity {
+            case "amp": "&"
+            case "quot": "\""
+            case "apos": "'"
+            case "lt": "<"
+            case "gt": ">"
+            default: entity.hasPrefix("#x") ? UInt32(entity.dropFirst(2), radix: 16).flatMap(UnicodeScalar.init)
+                                            : UInt32(entity.dropFirst()).flatMap(UnicodeScalar.init)
+            }
+            if let scalar { result.replaceSubrange(whole, with: String(Character(scalar))) }
         }
-        return (whole + fraction).replacingOccurrences(of: "0", with: "")
+        return result
     }
 
     // MARK: Networking
+
+    /// Hosts come from browsing history, so never reach into the local network: no localhost, `.local`/intranet names or private IPs.
+    nonisolated static func isPublicHost(_ host: String) -> Bool {
+        let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]."))
+        guard h.contains("."), !h.hasPrefix("localhost") else { return false }
+        for suffix in [".local", ".localhost", ".internal", ".lan", ".home", ".corp", ".intranet", ".home.arpa", ".test", ".invalid"] where h.hasSuffix(suffix) {
+            return false
+        }
+        if h.contains(":") { return false } // IPv6 literals: skip them rather than classify every reserved range
+        let octets = h.split(separator: ".").compactMap { Int($0) }
+        if octets.count == 4 && h.split(separator: ".").count == 4 {
+            switch (octets[0], octets[1]) {
+            case (0, _), (10, _), (127, _), (169, 254), (192, 168), (100, 64...127), (172, 16...31), (224..., _): return false
+            default: return true
+            }
+        }
+        return true
+    }
+
+    private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            let ok = request.url.map { ["http", "https"].contains($0.scheme ?? "") && WebIcons.isPublicHost($0.host ?? "") } ?? false
+            completionHandler(ok ? request : nil)
+        }
+    }
 
     private nonisolated static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10
         config.httpAdditionalHeaders = ["User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"]
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: RedirectGuard(), delegateQueue: nil)
     }()
 
-    private nonisolated static func get(_ url: URL) -> Data? {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Data?
-        session.dataTask(with: url) { data, response, _ in
-            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) { result = data }
-            semaphore.signal()
-        }.resume()
-        semaphore.wait()
-        return result
+    /// GETs a public http(s) URL, giving up on anything larger than `limit` bytes.
+    private nonisolated static func get(_ url: URL, limit: Int) async -> Data? {
+        guard ["http", "https"].contains(url.scheme ?? ""), isPublicHost(url.host ?? "") else { return nil }
+        guard let (bytes, response) = try? await session.bytes(from: url),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              http.expectedContentLength <= Int64(limit) else { return nil }
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > limit { bytes.task.cancel(); return nil }
+            }
+        } catch {
+            return nil
+        }
+        return data
     }
 }
 
@@ -224,25 +308,33 @@ struct FaviconView: View {
     var host: String
     var fallback: String
 
-    @State private var image: NSImage?
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var favicon: Favicon?
 
     var body: some View {
         Group {
-            if let image {
-                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            if let favicon {
+                let invert = (favicon.tone == .darkGlyph && colorScheme == .dark) || (favicon.tone == .lightGlyph && colorScheme == .light)
+                Image(nsImage: favicon.image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                    .colorInvertIf(invert)
                     .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             } else {
                 Image(systemName: fallback).foregroundStyle(.secondary)
             }
         }
         .frame(width: 16, height: 16)
-        .task(id: host) { image = await WebIcons.shared.favicon(host: host) }
+        .task(id: host) { favicon = await WebIcons.shared.favicon(host: host) }
+    }
+}
+
+private extension View {
+    @ViewBuilder func colorInvertIf(_ invert: Bool) -> some View {
+        if invert { colorInvert() } else { self }
     }
 }
 
 struct XAvatarView: View {
     var handle: String
-    var statusID: String?
 
     @State private var image: NSImage?
 
@@ -258,14 +350,13 @@ struct XAvatarView: View {
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(.primary.opacity(0.1), lineWidth: 0.5))
         .task(id: handle) {
-            image = await WebIcons.shared.profile(handle: handle, statusID: statusID)?.image.flatMap { NSImage(data: $0) }
+            image = await WebIcons.shared.profile(handle: handle)?.image.flatMap { NSImage(data: $0) }
         }
     }
 }
 
 struct XDisplayName: View {
     var handle: String
-    var statusID: String?
 
     @State private var name: String?
 
@@ -273,6 +364,6 @@ struct XDisplayName: View {
         Group {
             if let name, !name.isEmpty { Text(name).foregroundStyle(.secondary).lineLimit(1) }
         }
-        .task(id: handle) { name = await WebIcons.shared.profile(handle: handle, statusID: statusID)?.name }
+        .task(id: handle) { name = await WebIcons.shared.profile(handle: handle)?.name }
     }
 }

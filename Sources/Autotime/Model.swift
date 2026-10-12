@@ -67,14 +67,6 @@ enum ActivityPath {
         return first
     }
 
-    /// The tweet ID in an x.com/<handle>/status/<id> URL.
-    static func xStatusID(_ s: String) -> String? {
-        guard let url = URL(string: s), xHandle(url) != nil else { return nil }
-        let parts = url.pathComponents.filter { $0 != "/" }
-        guard parts.count >= 3, parts[1] == "status", parts[2].allSatisfy(\.isNumber) else { return nil }
-        return parts[2]
-    }
-
     static func displayURL(_ url: URL) -> String {
         var s = url.absoluteString
         for prefix in ["https://", "http://"] where s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
@@ -106,13 +98,6 @@ struct TreeNode: Identifiable {
     var bundleID: String
     var duration: TimeInterval
     var children: [TreeNode]
-
-    /// Any tweet under this node, used to look up its author's profile.
-    var firstStatusID: String? {
-        if case .url(let s) = kind, let id = ActivityPath.xStatusID(s) { return id }
-        for c in children { if let id = c.firstStatusID { return id } }
-        return nil
-    }
 }
 
 enum ViewMode: String, CaseIterable, Identifiable {
