@@ -41,7 +41,8 @@ enum ActivityPath {
                     group = repo
                     result.append(PathComponent(label: repo, kind: .githubRepo(repo)))
                 }
-                let page = cleanTitle(title, host: host, group: group, shared: sharedSegments[host] ?? [])
+                var page = cleanTitle(title, host: host, group: group, shared: sharedSegments[host] ?? [])
+                if group?.hasPrefix("@") == true, let media = xMediaLabel(url), xGenericTitles.contains(page) { page = media }
                 result.append(PathComponent(label: page.isEmpty ? displayURL(url) : page, kind: .url(path)))
                 return result
             } else if let url = URL(string: path), url.isFileURL {
@@ -160,6 +161,17 @@ enum ActivityPath {
         "signup", "tos", "privacy", "hashtag", "intent", "share", "account", "lists", "bookmarks", "communities",
         "premium", "jobs", "grok", "topics", "about", "download", "help", "following", "followers", "who_to_follow",
     ]
+
+    /// Titles of X's own pages. Photos and posts opened as overlays keep the page's title (often "Home"), so the URL says more.
+    private static let xGenericTitles: Set<String> = ["Home", "Explore", "Notifications", "Search", "Bookmarks", "Messages", "X", ""]
+
+    static func xMediaLabel(_ url: URL) -> String? {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 3, parts[1] == "status" else { return nil }
+        if parts.count >= 5, parts[3] == "photo" { return "Photo" }
+        if parts.count >= 5, parts[3] == "video" { return "Video" }
+        return "Post"
+    }
 
     /// The account an x.com URL belongs to (x.com/<handle>/…), or nil for app pages like /home.
     static func xHandle(_ url: URL) -> String? {

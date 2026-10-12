@@ -59,7 +59,13 @@ final class Extractor {
             axApp.set("AXManualAccessibility", kCFBooleanTrue)
             enabledPIDs.insert(app.processIdentifier)
         }
-        if needsWebArea, let area = webArea(pid: app.processIdentifier, window: window) {
+        if needsWebArea, var area = webArea(pid: app.processIdentifier, window: window) {
+            // After a tab switch the cached web area can still be the previous tab's; its document title then
+            // won't appear in the window title, so look it up again.
+            if browser, let t = area.title, !t.isEmpty, !rawTitle.contains(t) {
+                findCache["\(app.processIdentifier)"] = nil
+                area = webArea(pid: app.processIdentifier, window: window) ?? area
+            }
             webTitle = area.title ?? ""
             webURL = area.url(kAXURLAttribute)
         }
@@ -94,7 +100,8 @@ final class Extractor {
             return ExtractedInfo(title: "", path: path)
         }
 
-        let title = Self.cleanTitle(rawTitle.isEmpty ? webTitle : rawTitle, appName: appName)
+        // A browser's title comes from the same web area as its URL, so the two always describe the same tab.
+        let title = Self.cleanTitle(rawTitle.isEmpty || (browser && webURL != nil && !webTitle.isEmpty) ? webTitle : rawTitle, appName: appName)
 
         if browser {
             if Self.isPrivate(rawTitle) { return ExtractedInfo(title: "Private Window", path: "") }
