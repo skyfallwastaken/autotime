@@ -1,0 +1,29 @@
+name: verify-ui
+on:
+  push:
+    branches: [verify/stats-ui]
+jobs:
+  ui:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Environment
+        run: sw_vers; xcode-select -p; ls -d /Applications/Xcode*.app; system_profiler SPDisplaysDataType | grep -i resolution || true; csrutil status || true
+      - name: Build after
+        run: ./build.sh && cp -R build/Autotime.app /tmp/after.app
+      - name: Build before
+        if: ${{ !contains(github.event.head_commit.message, '[skip-before]') }}
+        run: git worktree add /tmp/before origin/main && cd /tmp/before && ./build.sh && cp -R build/Autotime.app /tmp/before.app
+      - run: swiftc -O verify/drive.swift -o /tmp/drive
+      - name: Capture
+        run: |
+          mkdir -p shots
+          if [ -d /tmp/before.app ]; then python3 verify/seed.py > shots/expected.json; bash verify/run.sh /tmp/before.app before shots; fi
+          python3 verify/seed.py > shots/expected.json
+          bash verify/run.sh /tmp/after.app after shots
+          sqlite3 ~/Library/Application\ Support/Autotime/autotime.sqlite "select bundle, count(*), round(sum(end-start)/60.0,1) from activity where start >= strftime('%s','now','start of day','localtime','utc') group by bundle order by 3 desc" > shots/db-today.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: shots, path: shots }
