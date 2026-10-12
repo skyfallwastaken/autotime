@@ -141,7 +141,7 @@ struct NodeRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(node.kind == .none ? .secondary : .primary)
-                .help(node.label)
+                .help(node.tooltip)
             if case .xUser(let handle) = node.kind {
                 XDisplayName(handle: handle)
             }
@@ -154,6 +154,14 @@ struct NodeRow: View {
             toggle(NSEvent.modifierFlags.contains(.option))
         }
         .contextMenu { NodeMenu(node: node) }
+    }
+}
+
+extension TreeNode {
+    /// Page rows are labelled by title, so their tooltip shows the URL instead.
+    var tooltip: String {
+        if case .url(let s) = kind { return "\(label)\n\(s)" }
+        return label
     }
 }
 
@@ -176,6 +184,8 @@ struct NodeIcon: View {
             }
         case .xUser(let handle):
             XAvatarView(handle: handle)
+        case .githubRepo(let repo):
+            GitHubOwnerAvatar(repo: repo)
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
         default:
@@ -197,6 +207,8 @@ struct NodeMenu: View {
             if let url = URL(string: "https://\(host)") { Button("Open \(host)") { NSWorkspace.shared.open(url) } }
         case .xUser(let handle):
             if let url = URL(string: "https://x.com/\(handle)") { Button("Open Profile") { NSWorkspace.shared.open(url) } }
+        case .githubRepo(let repo):
+            if let url = URL(string: "https://github.com/\(repo)") { Button("Open Repository") { NSWorkspace.shared.open(url) } }
         case .file(let path):
             Button("Copy Path") { copy(path) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }

@@ -7,6 +7,7 @@ enum NodeKind: Hashable {
     case domain(String)
     case url(String)
     case xUser(String)
+    case githubRepo(String)
     case file(String)
     case segment
     case title
@@ -25,15 +26,23 @@ enum ActivityPath {
         parts(path: path, title: title).map(\.label)
     }
 
-    static func parts(path: String, title: String) -> [PathComponent] {
+    static func parts(path: String, title: String, sharedSegments: [String: Set<String>] = [:]) -> [PathComponent] {
         var result: [PathComponent] = []
         if !path.isEmpty {
             if let url = URL(string: path), let scheme = url.scheme, scheme == "http" || scheme == "https", let host = url.host {
+                // Web pages: domain › (account or repo) › page, labelled by its cleaned-up title rather than the raw URL.
                 result.append(PathComponent(label: host, kind: .domain(host)))
+                var group: String?
                 if let handle = xHandle(url) {
+                    group = "@" + handle
                     result.append(PathComponent(label: "@" + handle, kind: .xUser(handle)))
+                } else if let repo = githubRepo(url) {
+                    group = repo
+                    result.append(PathComponent(label: repo, kind: .githubRepo(repo)))
                 }
-                result.append(PathComponent(label: displayURL(url), kind: .url(path)))
+                let page = cleanTitle(title, host: host, group: group, shared: sharedSegments[host] ?? [])
+                result.append(PathComponent(label: page.isEmpty ? displayURL(url) : page, kind: .url(path)))
+                return result
             } else if let url = URL(string: path), url.isFileURL {
                 result.append(PathComponent(label: abbreviate(url.path, directory: url.hasDirectoryPath), kind: .file(url.path)))
             } else if path.contains(Extractor.separator) {
@@ -49,6 +58,99 @@ enum ActivityPath {
             result.append(PathComponent(label: noInfo, kind: .none))
         }
         return result
+    }
+
+    // MARK: Page titles
+
+    private static let titleSeparators = [" | ", " - ", " — ", " – ", " · ", " • ", " / ", " // ", " :: "]
+
+    private static func segments(_ title: String) -> [String] {
+        var parts = [title]
+        for sep in titleSeparators { parts = parts.flatMap { $0.components(separatedBy: sep) } }
+        return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// Strips what browsers' window titles repeat on every page: unread counts like "(3)", the site's name
+    /// ("| Proton Mail", "· GitHub", "/ X"), the account or repo the page is already grouped under,
+    /// and segments most of the host's titles share (such as the signed-in email address).
+    static func cleanTitle(_ title: String, host: String, group: String?, shared: Set<String>) -> String {
+        var t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        t = t.replacingOccurrences(of: "^\\(\\d+\\+?\\)\\s*", with: "", options: .regularExpression)
+        func redundant(_ segment: Substring) -> Bool {
+            let s = segment.trimmingCharacters(in: .whitespaces)
+            return isSiteName(s, host: host) || shared.contains(s.lowercased()) || s.caseInsensitiveCompare(group ?? "") == .orderedSame
+        }
+        func split(_ t: String, backwards: Bool) -> (head: Substring, tail: Substring)? {
+            let found = titleSeparators.compactMap { t.range(of: $0, options: backwards ? .backwards : []) }
+            guard let r = backwards ? found.max(by: { $0.lowerBound < $1.lowerBound }) : found.min(by: { $0.lowerBound < $1.lowerBound }) else { return nil }
+            return (t[..<r.lowerBound], t[r.upperBound...])
+        }
+        for _ in 0..<4 {
+            guard let (head, tail) = split(t, backwards: true), !head.trimmingCharacters(in: .whitespaces).isEmpty, redundant(tail) else { break }
+            t = String(head)
+        }
+        if let (head, tail) = split(t, backwards: false), !tail.trimmingCharacters(in: .whitespaces).isEmpty, redundant(head) {
+            t = String(tail)
+        }
+        if let group, group.hasPrefix("@") {
+            // Tweets: `Name on X: "text"` → the text; profiles: `Name (@handle)` → Profile.
+            if t.range(of: "^.+? on (X|Twitter): \".*\"$", options: .regularExpression) != nil {
+                t = t.replacingOccurrences(of: "(?s)^.+? on (?:X|Twitter): \"(.*)\"$", with: "$1", options: .regularExpression)
+            } else if t.lowercased().hasSuffix("(\(group.lowercased()))") {
+                t = "Profile"
+            }
+        } else if let group, let name = group.split(separator: "/").last {
+            // GitHub: `owner/repo: description` → description; `repo/path/file.swift at main` → path/file.swift
+            if t.lowercased().hasPrefix(group.lowercased() + ": ") { t.removeFirst(group.count + 2) }
+            if t.lowercased().hasPrefix(name.lowercased() + "/") { t.removeFirst(name.count + 1) }
+            t = t.replacingOccurrences(of: " at [^ ]+$", with: "", options: .regularExpression)
+        }
+        return t.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Whether a title segment is just the site's name: "GitHub" on github.com, "Proton Mail" on mail.proton.me, "X" on x.com.
+    private static func isSiteName(_ segment: String, host: String) -> Bool {
+        let key = segment.lowercased().filter { $0.isLetter || $0.isNumber }
+        guard !key.isEmpty, segment.count <= 30 else { return false }
+        let labels = host.lowercased().split(separator: ".").map(String.init).filter { $0 != "www" }
+        if labels.contains(key) || labels.joined().contains(key) && key.count >= 4 { return true }
+        return labels.dropLast().contains { $0.count >= 4 && key.contains($0) }
+    }
+
+    /// Title segments that most pages on a host share, which say nothing about the page itself.
+    static func sharedTitleSegments(_ activities: [Activity]) -> [String: Set<String>] {
+        var titles: [String: Set<String>] = [:]
+        for a in activities where !a.title.isEmpty {
+            guard let url = URL(string: a.path), url.scheme?.hasPrefix("http") == true, let host = url.host else { continue }
+            titles[host, default: []].insert(a.title)
+        }
+        var result: [String: Set<String>] = [:]
+        for (host, set) in titles where set.count >= 2 {
+            var counts: [String: Int] = [:]
+            for t in set { for seg in Set(segments(t).dropFirst().map { $0.lowercased() }) { counts[seg, default: 0] += 1 } }
+            let common = counts.filter { $0.value >= 2 && $0.value * 2 >= set.count }.keys
+            if !common.isEmpty { result[host] = Set(common) }
+        }
+        return result
+    }
+
+    // MARK: Sites
+
+    private static let githubReserved: Set<String> = [
+        "settings", "notifications", "orgs", "organizations", "marketplace", "explore", "topics", "sponsors", "features",
+        "pulls", "issues", "login", "logout", "signup", "join", "new", "codespaces", "search", "apps", "enterprise", "pricing",
+        "about", "collections", "trending", "account", "dashboard", "users", "stars", "watching", "security", "readme", "site",
+        "contact", "team", "events", "resources", "solutions", "copilot", "models", "github-copilot", "customer-stories", "sessions",
+    ]
+
+    /// "owner/repo" for github.com/<owner>/<repo>/…
+    static func githubRepo(_ url: URL) -> String? {
+        guard let host = url.host?.lowercased(), host == "github.com" || host == "www.github.com" else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 2, !githubReserved.contains(parts[0].lowercased()) else { return nil }
+        let valid = { (s: String) in s.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) } }
+        guard valid(parts[0]), valid(parts[1]) else { return nil }
+        return parts[0] + "/" + parts[1]
     }
 
     static let xHosts: Set<String> = ["x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com"]
@@ -84,7 +186,8 @@ enum ActivityPath {
     static func primaryLabel(_ a: Activity) -> String {
         let p = parts(path: a.path, title: a.title)
         if let first = p.first, case .domain = first.kind {
-            return a.title.isEmpty ? first.label : "\(a.title) — \(first.label)"
+            let title = cleanTitle(a.title, host: first.label, group: nil, shared: [])
+            return title.isEmpty ? first.label : "\(title) — \(first.label)"
         }
         if p.first?.kind == NodeKind.none { return a.appName }
         return p.map(\.label).joined(separator: " › ")
@@ -139,6 +242,7 @@ enum TreeBuilder {
 
     static func build(_ activities: [Activity], mode: ViewMode) -> [TreeNode] {
         let root = Builder(label: "", kind: .none, bundleID: "")
+        let shared = ActivityPath.sharedTitleSegments(activities)
         for a in activities {
             var node = root
             node.duration += a.duration
@@ -149,8 +253,12 @@ enum TreeBuilder {
             }
             node = node.child("a:" + a.bundleID, label: a.appName, kind: .app(a.bundleID), bundleID: a.bundleID)
             node.duration += a.duration
-            for (i, part) in ActivityPath.parts(path: a.path, title: a.title).enumerated() {
-                let key = if case .xUser(let h) = part.kind { "@" + h.lowercased() } else { part.label }
+            for (i, part) in ActivityPath.parts(path: a.path, title: a.title, sharedSegments: shared).enumerated() {
+                let key = switch part.kind {
+                case .xUser(let h): "@" + h.lowercased()
+                case .githubRepo(let r): r.lowercased()
+                default: part.label
+                }
                 node = node.child("\(i):" + key, label: part.label, kind: part.kind, bundleID: a.bundleID)
                 node.duration += a.duration
             }

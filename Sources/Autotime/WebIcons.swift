@@ -25,6 +25,7 @@ final class WebIcons {
 
     private var favicons: [String: Task<Favicon?, Never>] = [:]
     private var profiles: [String: Task<XProfile?, Never>] = [:]
+    private var githubAvatars: [String: Task<NSImage?, Never>] = [:]
 
     func favicon(host: String) async -> Favicon? {
         let host = host.lowercased()
@@ -42,6 +43,22 @@ final class WebIcons {
         if let t = profiles[handle] { return await t.value }
         let t = Task.detached(priority: .utility) { await Self.loadProfile(handle) }
         profiles[handle] = t
+        return await t.value
+    }
+
+    func githubAvatar(owner: String) async -> NSImage? {
+        let owner = owner.lowercased()
+        if let t = githubAvatars[owner] { return await t.value }
+        let t = Task.detached(priority: .utility) { () -> NSImage? in
+            let name = "github-\(Self.safeName(owner))"
+            var data = Self.cached(name, maxAge: 7 * 86400)
+            if data == nil, let url = URL(string: "https://github.com/\(owner).png?size=64") {
+                data = await Self.get(url, limit: 1024 * 1024)
+                if let data { Self.store(data, as: name) }
+            }
+            return data.flatMap { NSImage(data: $0) }
+        }
+        githubAvatars[owner] = t
         return await t.value
     }
 
@@ -261,11 +278,41 @@ final class WebIcons {
         }
         if h.contains(":") { return false } // IPv6 literals: skip them rather than classify every reserved range
         let octets = h.split(separator: ".").compactMap { Int($0) }
-        if octets.count == 4 && h.split(separator: ".").count == 4 {
-            switch (octets[0], octets[1]) {
-            case (0, _), (10, _), (127, _), (169, 254), (192, 168), (100, 64...127), (172, 16...31), (224..., _): return false
-            default: return true
+        if octets.count == 4 && h.split(separator: ".").count == 4 { return isPublicIPv4(octets[0], octets[1]) }
+        return true
+    }
+
+    private nonisolated static func isPublicIPv4(_ a: Int, _ b: Int) -> Bool {
+        switch (a, b) {
+        case (0, _), (10, _), (127, _), (169, 254), (192, 168), (100, 64...127), (172, 16...31), (224..., _): false
+        default: true
+        }
+    }
+
+    /// Every address the host resolves to must be public, so a public-looking name pointing at 192.168.x.x is refused too.
+    nonisolated static func resolvesPublicly(_ host: String) -> Bool {
+        guard isPublicHost(host) else { return false }
+        var hints = addrinfo()
+        hints.ai_socktype = SOCK_STREAM
+        var list: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &list) == 0, let first = list else { return false }
+        defer { freeaddrinfo(first) }
+        var node: UnsafeMutablePointer<addrinfo>? = first
+        while let info = node?.pointee {
+            if info.ai_family == AF_INET {
+                let addr = info.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+                let b = withUnsafeBytes(of: addr) { Array($0) }
+                if !isPublicIPv4(Int(b[0]), Int(b[1])) { return false }
+            } else if info.ai_family == AF_INET6 {
+                let addr = info.ai_addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
+                let b = withUnsafeBytes(of: addr) { Array($0) }
+                let loopbackOrUnspecified = b[0..<15].allSatisfy { $0 == 0 } && b[15] <= 1
+                let uniqueLocal = b[0] & 0xfe == 0xfc
+                let linkLocal = b[0] == 0xfe && b[1] & 0xc0 == 0x80
+                let mapped = b[0..<10].allSatisfy { $0 == 0 } && b[10] == 0xff && b[11] == 0xff
+                if loopbackOrUnspecified || uniqueLocal || linkLocal || (mapped && !isPublicIPv4(Int(b[12]), Int(b[13]))) { return false }
             }
+            node = info.ai_next
         }
         return true
     }
@@ -273,7 +320,7 @@ final class WebIcons {
     private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-            let ok = request.url.map { ["http", "https"].contains($0.scheme ?? "") && WebIcons.isPublicHost($0.host ?? "") } ?? false
+            let ok = request.url.map { ["http", "https"].contains($0.scheme ?? "") && WebIcons.resolvesPublicly($0.host ?? "") } ?? false
             completionHandler(ok ? request : nil)
         }
     }
@@ -287,7 +334,7 @@ final class WebIcons {
 
     /// GETs a public http(s) URL, giving up on anything larger than `limit` bytes.
     private nonisolated static func get(_ url: URL, limit: Int) async -> Data? {
-        guard ["http", "https"].contains(url.scheme ?? ""), isPublicHost(url.host ?? "") else { return nil }
+        guard ["http", "https"].contains(url.scheme ?? ""), resolvesPublicly(url.host ?? "") else { return nil }
         guard let (bytes, response) = try? await session.bytes(from: url),
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               http.expectedContentLength <= Int64(limit) else { return nil }
@@ -351,6 +398,27 @@ struct XAvatarView: View {
         .overlay(Circle().strokeBorder(.primary.opacity(0.1), lineWidth: 0.5))
         .task(id: handle) {
             image = await WebIcons.shared.profile(handle: handle)?.image.flatMap { NSImage(data: $0) }
+        }
+    }
+}
+
+struct GitHubOwnerAvatar: View {
+    var repo: String
+
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "book.closed").foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .task(id: repo) {
+            image = await WebIcons.shared.githubAvatar(owner: String(repo.split(separator: "/").first ?? ""))
         }
     }
 }
