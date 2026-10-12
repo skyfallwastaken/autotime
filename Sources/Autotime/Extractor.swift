@@ -11,6 +11,7 @@ final class Extractor {
 
     private var enabledPIDs = Set<pid_t>()
     private var findCache: [String: (window: AXElement, element: AXElement?, checked: Date)] = [:]
+    private let amp = AmpExtractor()
     private var firefoxSession: (file: URL, modified: Date, tabs: [(title: String, url: String)])?
     private lazy var browsers: Set<String> = {
         var ids: Set<String> = [
@@ -82,6 +83,11 @@ final class Extractor {
 
         if bundleID == "com.apple.Notes" {
             if let path = Self.notesPath(window: window, title: rawTitle) { return ExtractedInfo(title: "", path: path) }
+        }
+
+        if bundleID == AmpExtractor.bundleID, let area = webArea(pid: app.processIdentifier, window: window),
+           let info = amp.info(pid: app.processIdentifier, area: area) {
+            return info
         }
 
         if gitHubDesktop, let path = gitHubDesktopPath(pid: app.processIdentifier, window: window) {

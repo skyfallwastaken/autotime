@@ -26,6 +26,7 @@ final class WebIcons {
     private var favicons: [String: Task<Favicon?, Never>] = [:]
     private var profiles: [String: Task<XProfile?, Never>] = [:]
     private var githubAvatars: [String: Task<NSImage?, Never>] = [:]
+    private var remoteImages: [String: Task<NSImage?, Never>] = [:]
 
     func favicon(host: String) async -> Favicon? {
         let host = host.lowercased()
@@ -43,6 +44,23 @@ final class WebIcons {
         if let t = profiles[handle] { return await t.value }
         let t = Task.detached(priority: .utility) { await Self.loadProfile(handle) }
         profiles[handle] = t
+        return await t.value
+    }
+
+    func image(at url: URL) async -> NSImage? {
+        let key = url.absoluteString
+        if let t = remoteImages[key] { return await t.value }
+        let t = Task.detached(priority: .utility) { () -> NSImage? in
+            let hash = key.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
+            let name = "image-\(Self.safeName(url.host ?? ""))-\(String(hash, radix: 36))"
+            var data = Self.cached(name, maxAge: 7 * 86400)
+            if data == nil {
+                data = await Self.get(url, limit: 1024 * 1024)
+                if let data { Self.store(data, as: name) }
+            }
+            return data.flatMap { NSImage(data: $0) }
+        }
+        remoteImages[key] = t
         return await t.value
     }
 
@@ -420,6 +438,23 @@ struct GitHubOwnerAvatar: View {
         .task(id: repo) {
             image = await WebIcons.shared.githubAvatar(owner: String(repo.split(separator: "/").first ?? ""))
         }
+    }
+}
+
+/// A project's own icon when its owner set one in Amp, otherwise Amp's app icon.
+struct AmpProjectIcon: View {
+    var project: String
+
+    @State private var image: NSImage?
+
+    var body: some View {
+        Image(nsImage: image ?? AppCatalog.shared.icon(for: AmpExtractor.bundleID))
+            .resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+            .frame(width: 16, height: 16)
+            .clipShape(RoundedRectangle(cornerRadius: image == nil ? 0 : 4, style: .continuous))
+            .task(id: project) {
+                if let url = AmpProjects.iconURL(project) { image = await WebIcons.shared.image(at: url) }
+            }
     }
 }
 

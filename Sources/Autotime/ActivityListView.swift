@@ -186,6 +186,8 @@ struct NodeIcon: View {
             XAvatarView(handle: handle)
         case .githubRepo(let repo):
             GitHubOwnerAvatar(repo: repo)
+        case .ampProject(let name):
+            AmpProjectIcon(project: name)
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
         default:

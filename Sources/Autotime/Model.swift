@@ -8,6 +8,7 @@ enum NodeKind: Hashable {
     case url(String)
     case xUser(String)
     case githubRepo(String)
+    case ampProject(String)
     case file(String)
     case segment
     case title
@@ -253,7 +254,11 @@ enum TreeBuilder {
             }
             node = node.child("a:" + a.bundleID, label: a.appName, kind: .app(a.bundleID), bundleID: a.bundleID)
             node.duration += a.duration
-            for (i, part) in ActivityPath.parts(path: a.path, title: a.title, sharedSegments: shared).enumerated() {
+            var parts = ActivityPath.parts(path: a.path, title: a.title, sharedSegments: shared)
+            if a.bundleID == AmpExtractor.bundleID, parts.count >= 2, parts[0].kind == .segment {
+                parts[0].kind = .ampProject(parts[0].label)
+            }
+            for (i, part) in parts.enumerated() {
                 let key = switch part.kind {
                 case .xUser(let h): "@" + h.lowercased()
                 case .githubRepo(let r): r.lowercased()
