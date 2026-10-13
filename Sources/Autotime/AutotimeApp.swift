@@ -1,12 +1,15 @@
 import SwiftUI
 import ServiceManagement
+import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         if !AccessibilityPermission.isTrusted {
             AccessibilityPermission.prompt()
         }
         Tracker.shared.start()
+        Limits.shared.start()
         _ = Updater.shared
     }
 
@@ -16,6 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Limit reminders show even while Autotime's window is in front.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }
 
@@ -36,6 +44,9 @@ struct AutotimeApp: App {
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesButton()
+            }
+            CommandGroup(after: .newItem) {
+                Button("Export…") { model.showExport = true }.keyboardShortcut("e", modifiers: [.command])
             }
             CommandGroup(after: .toolbar) {
                 Button("Previous Day") { model.shift(-1) }.keyboardShortcut(.leftArrow, modifiers: [.command])

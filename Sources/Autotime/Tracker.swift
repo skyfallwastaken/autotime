@@ -96,13 +96,14 @@ final class Tracker: ObservableObject {
 
         guard let app else { return }
         let bundleID = app.bundleIdentifier ?? app.executableURL?.lastPathComponent ?? "unknown"
-        if Store.isHidden(bundleID) {
+        if Store.isHidden(bundleID) || Exclusions.shared.excludes(app: bundleID) {
             closeSegment(at: now)
             return
         }
 
         let appName = app.localizedName ?? bundleID
-        let info = AccessibilityPermission.isTrusted ? extractor.extract(app: app) : ExtractedInfo(title: "", path: "")
+        var info = AccessibilityPermission.isTrusted ? extractor.extract(app: app) : ExtractedInfo(title: "", path: "")
+        if Exclusions.shared.excludes(path: info.path) { info = ExtractedInfo(title: "Excluded Website", path: "") }
         let key = "\(bundleID)\u{1}\(info.title)\u{1}\(info.path)"
 
         let pathless = "\(bundleID)\u{1}\(info.title)\u{1}"

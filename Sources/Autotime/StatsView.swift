@@ -165,7 +165,16 @@ struct StatsView: View {
         let domains = Self.domains(data)
         let files = Self.files(data)
         let places = Self.places(data)
+        let projects = Self.totals(data) { a in Projects.shared.project(for: a).map { ($0.id.uuidString, $0.name) } }
 
+        if !projects.isEmpty {
+            Card(title: "Projects") {
+                RankList(items: projects.prefix(10).map {
+                    let id = UUID(uuidString: $0.key)!
+                    return RankItem(label: $0.name, duration: $0.duration, icon: .project(id), tint: Projects.shared.project(id: id)?.color ?? .gray)
+                }, total: total)
+            }
+        }
         Card(title: "Categories") {
             RankList(items: categories.prefix(10).map { RankItem(label: $0.name, duration: $0.duration, icon: .category($0.name), tint: AppCatalog.shared.color(forCategory: $0.name)) }, total: total)
         }

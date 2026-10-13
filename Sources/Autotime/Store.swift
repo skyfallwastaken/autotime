@@ -29,6 +29,13 @@ extension Notification.Name {
     static let storeDidChange = Notification.Name("AutotimeStoreDidChange")
 }
 
+extension NotificationCenter {
+    /// Deletions and imports can change any day, so they ask every view to reload, not just ones showing today.
+    func postStoreEdited() {
+        DispatchQueue.main.async { self.post(name: .storeDidChange, object: nil, userInfo: ["edited": true]) }
+    }
+}
+
 final class Store {
     static let shared = Store()
 
@@ -78,6 +85,8 @@ final class Store {
         sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil)
         exec("PRAGMA journal_mode=WAL")
         exec("PRAGMA synchronous=NORMAL")
+        // Deleted history is overwritten rather than left in free pages.
+        exec("PRAGMA secure_delete=ON")
         exec("""
         CREATE TABLE IF NOT EXISTS activity(
             id INTEGER PRIMARY KEY,
@@ -175,7 +184,43 @@ final class Store {
             sqlite3_finalize(stmt)
         }
         lock.unlock()
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .storeDidChange, object: nil) }
+        NotificationCenter.default.postStoreEdited()
+    }
+
+    func delete(ids: [Int64]) {
+        guard !ids.isEmpty else { return }
+        lock.lock()
+        if let stmt = prepare("DELETE FROM activity WHERE id=?") {
+            exec("BEGIN")
+            for id in ids {
+                sqlite3_reset(stmt)
+                sqlite3_bind_int64(stmt, 1, id)
+                sqlite3_step(stmt)
+            }
+            exec("COMMIT")
+            sqlite3_finalize(stmt)
+        }
+        exec("PRAGMA wal_checkpoint(TRUNCATE)")
+        lock.unlock()
+        NotificationCenter.default.postStoreEdited()
+    }
+
+    /// Apps recorded in the last `days` days, most used first, for pickers.
+    func recentApps(days: Int = 30) async -> [(bundleID: String, name: String)] {
+        await Task.detached(priority: .userInitiated) { self.recentAppsNow(days: days) }.value
+    }
+
+    private func recentAppsNow(days: Int) -> [(bundleID: String, name: String)] {
+        lock.lock(); defer { lock.unlock() }
+        guard let stmt = prepare("SELECT bundle, app FROM activity WHERE start>? GROUP BY bundle ORDER BY SUM(end - start) DESC") else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_double(stmt, 1, Date().addingTimeInterval(-Double(days) * 86400).timeIntervalSince1970)
+        var result: [(bundleID: String, name: String)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let bundle = text(stmt, 0)
+            if !Store.isHidden(bundle) { result.append((bundle, text(stmt, 1))) }
+        }
+        return result
     }
 
     func deleteAll() {
@@ -183,7 +228,7 @@ final class Store {
         exec("DELETE FROM activity")
         exec("VACUUM")
         lock.unlock()
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .storeDidChange, object: nil) }
+        NotificationCenter.default.postStoreEdited()
     }
 
     func importIntervals(_ intervals: [ImportedInterval], name: (String) -> String) -> (count: Int, duration: TimeInterval) {
@@ -231,7 +276,7 @@ final class Store {
         }
         exec("COMMIT")
         refreshLongest()
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .storeDidChange, object: nil) }
+        NotificationCenter.default.postStoreEdited()
         return (count, total)
     }
 
@@ -289,7 +334,7 @@ final class Store {
         }
         exec("COMMIT")
         refreshLongest()
-        DispatchQueue.main.async { NotificationCenter.default.post(name: .storeDidChange, object: nil) }
+        NotificationCenter.default.postStoreEdited()
         return count
     }
 

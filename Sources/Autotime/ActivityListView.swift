@@ -24,6 +24,10 @@ struct ActivityListView: View {
                     .help("Clear Selection")
                 }
                 Spacer(minLength: 12)
+                if !model.search.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Button("Delete Matching…") { model.deletion = .search(model.search.trimmingCharacters(in: .whitespaces)) }
+                        .help("Delete activities matching the search")
+                }
                 Picker("", selection: $model.mode) {
                     ForEach(ViewMode.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -49,6 +53,8 @@ struct ActivityListView: View {
         var name = "All Activities"
         if let app = model.appFilter {
             name = model.appTotals.first { $0.bundleID == app }?.name ?? name
+        } else if let project = model.projectFilter {
+            name = Projects.shared.project(id: project)?.name ?? name
         }
         var s = "\(name): \(Format.duration(total))"
         if model.selection != nil { s += " (\(Format.duration(selected, seconds: true)) selected)" }
@@ -175,6 +181,8 @@ struct NodeIcon: View {
             Image(nsImage: AppCatalog.shared.icon(for: id)).resizable().frame(width: 16, height: 16)
         case .category(let name):
             Circle().fill(AppCatalog.shared.color(forCategory: name)).frame(width: 11, height: 11).frame(width: 16)
+        case .project(let id):
+            Circle().fill(Projects.shared.project(id: id)?.color ?? .gray.opacity(0.4)).frame(width: 11, height: 11).frame(width: 16)
         case .domain(let host):
             FaviconView(host: host, fallback: "globe")
         case .url(let s):
@@ -208,10 +216,36 @@ struct NodeIcon: View {
 }
 
 struct NodeMenu: View {
+    @Environment(DayModel.self) private var model
     var node: TreeNode
 
     var body: some View {
         Button("Copy") { copy(node.label) }
+        if let rule = Rule(node: node) {
+            Menu("Add to Project") {
+                ForEach(Projects.shared.list) { p in
+                    Button(p.name) { Projects.shared.add(rule, to: p.id) }
+                }
+                if !Projects.shared.list.isEmpty { Divider() }
+                Button("New Project…") {
+                    model.projectDraft = ProjectDraft(project: Projects.shared.newProject(name: node.label, rules: [rule]), isNew: true)
+                }
+            }
+        }
+        if case .project(let id) = node.kind, let project = Projects.shared.project(id: id) {
+            Button("Edit Project…") { model.projectDraft = ProjectDraft(project: project, isNew: false) }
+        }
+        switch node.kind {
+        case .app(let id):
+            Button("Set Daily Limit…") { model.limitDraft = Limit(target: .app(id), minutes: 60) }
+        case .domain(let host):
+            Button("Set Daily Limit…") { model.limitDraft = Limit(target: .website(host), minutes: 30) }
+        case .project(let id) where id != Project.unassigned:
+            Button("Set Daily Limit…") { model.limitDraft = Limit(target: .project(id), minutes: 120) }
+        default:
+            EmptyView()
+        }
+        Divider()
         switch node.kind {
         case .url(let s):
             Button("Copy URL") { copy(s) }
@@ -227,6 +261,18 @@ struct NodeMenu: View {
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
         case .app(let id):
             if let url = AppCatalog.shared.appURL(id) { Button("Open \(node.label)") { NSWorkspace.shared.open(url) } }
+        default:
+            EmptyView()
+        }
+        switch node.kind {
+        case .domain(let host):
+            Divider()
+            Button("Delete History for \(host)…") { model.deletion = .website(host) }
+            Button("Never Record \(host)") { Exclusions.shared.add(site: host) }
+        case .app(let id):
+            Divider()
+            Button("Delete History for \(node.label)…") { model.deletion = .app(id) }
+            Button("Never Record \(node.label)") { Exclusions.shared.add(app: id) }
         default:
             EmptyView()
         }

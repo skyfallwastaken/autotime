@@ -16,6 +16,23 @@ struct SettingsView: View {
     @State private var screenTimeNeedsAccess = false
 
     var body: some View {
+        TabView {
+            general.tabItem { Label("General", systemImage: "gearshape") }
+            ExclusionsSettings().tabItem { Label("Privacy", systemImage: "hand.raised") }
+            LimitsSettings().tabItem { Label("Limits", systemImage: "hourglass") }
+            TimelineSettings().tabItem { Label("Timeline", systemImage: "calendar") }
+            data.tabItem { Label("Data", systemImage: "externaldrive") }
+        }
+        .frame(width: 520, height: 500)
+        .onAppear { trusted = AccessibilityPermission.isTrusted }
+        .confirmationDialog("Delete all recorded activity?", isPresented: $confirmDelete) {
+            Button("Delete Everything", role: .destructive) { Store.shared.deleteAll() }
+        } message: {
+            Text("This cannot be undone.")
+        }
+    }
+
+    private var general: some View {
         Form {
             Section("Tracking") {
                 Toggle("Pause tracking", isOn: $tracker.isPaused)
@@ -55,8 +72,18 @@ struct SettingsView: View {
                     CheckForUpdatesButton()
                 }
             }
+        }
+        .formStyle(.grouped)
+    }
 
-            Section("Data") {
+    private var data: some View {
+        Form {
+            Section {
+                LabeledContent("Export") {
+                    Text("File ▸ Export… (⌘E)").foregroundStyle(.secondary)
+                }
+            }
+            Section("History") {
                 LabeledContent("Database") {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([Store.directory]) }
                 }
@@ -103,14 +130,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480)
-        .fixedSize(horizontal: false, vertical: true)
-        .onAppear { trusted = AccessibilityPermission.isTrusted }
-        .confirmationDialog("Delete all recorded activity?", isPresented: $confirmDelete) {
-            Button("Delete Everything", role: .destructive) { Store.shared.deleteAll() }
-        } message: {
-            Text("This cannot be undone.")
-        }
     }
 
     private func importScreenTime() {
@@ -179,6 +198,14 @@ struct MenuBarView: View {
             }
             .font(.callout)
 
+            if !Limits.shared.list.isEmpty {
+                Divider()
+                ForEach(Limits.shared.list) { limit in
+                    LimitProgress(limit: limit, used: Limits.shared.usage[limit.id] ?? 0)
+                        .font(.callout)
+                }
+            }
+
             if !top.isEmpty {
                 Divider()
                 ForEach(top, id: \.0) { item in
@@ -213,6 +240,7 @@ struct MenuBarView: View {
     }
 
     private func load() {
+        Limits.shared.refresh()
         let start = Calendar.current.startOfDay(for: Date())
         let list = Store.shared.activities(in: start...start.addingTimeInterval(86400))
         total = list.reduce(0) { $0 + $1.duration }

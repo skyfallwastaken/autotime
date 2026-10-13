@@ -26,6 +26,8 @@
     <string>public.app-category.productivity</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Autotime shows your calendar events beside the timeline. They never leave this Mac.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

@@ -36,7 +36,12 @@ struct TimelineView: View {
 
             GeometryReader { geo in
                 let width = geo.size.width
-                let blocksWidth = max(40, width - blocksX - labelWidth - 6)
+                let events = model.annotations.events
+                let commits = model.annotations.commits
+                // Calendar events and commits get a lane between the blocks and the hour labels.
+                let laneWidth: CGFloat = events.isEmpty && commits.isEmpty ? 0 : min(150, width * 0.32)
+                let blocksWidth = max(40, width - blocksX - labelWidth - 6 - (laneWidth > 0 ? laneWidth + 6 : 0))
+                let laneX = blocksX + blocksWidth + 6
                 ScrollViewReader { proxy in
                     ScrollView(.vertical) {
                         ZStack(alignment: .topLeading) {
@@ -51,6 +56,10 @@ struct TimelineView: View {
                             ForEach(blocks) { block in
                                 blockView(block, width: blocksWidth)
                             }
+                            ForEach(events) { event in
+                                eventView(event, x: laneX, width: laneWidth)
+                            }
+                            commitMarks(commits, x: laneX, width: laneWidth)
                             selectionOverlay(width: width)
                             if model.isToday {
                                 nowLine(width: width)
@@ -170,6 +179,61 @@ struct TimelineView: View {
         .onTapGesture { model.selection = block.start...block.end }
         .help(tooltip(block))
     }
+
+    private func eventView(_ event: CalendarEvent, x: CGFloat, width: CGFloat) -> some View {
+        let top = y(max(event.start, model.date))
+        let height = max(6, y(min(event.end, dayRange.upperBound)) - top)
+        return ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous).fill(event.color.opacity(0.18))
+            Rectangle().fill(event.color).frame(width: 3)
+            if height >= 14 {
+                Text(event.title)
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(height >= 28 ? 2 : 1)
+                    .padding(.leading, 6)
+                    .padding(.top, 2)
+                    .padding(.trailing, 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .frame(width: width, height: height)
+        .offset(x: x, y: top)
+        .help("\(event.title)\n\(Format.time.string(from: event.start)) – \(Format.time.string(from: event.end)) · \(event.calendar)")
+    }
+
+    /// A dot per commit, labelled with its message where the previous label leaves room.
+    private func commitMarks(_ commits: [Commit], x: CGFloat, width: CGFloat) -> some View {
+        var lastLabel = -CGFloat.infinity
+        let marks: [(commit: Commit, y: CGFloat, labelled: Bool)] = commits.map { c in
+            let cy = y(c.date)
+            let labelled = cy - lastLabel >= 13
+            if labelled { lastLabel = cy }
+            return (c, cy, labelled)
+        }
+        return ForEach(marks, id: \.commit.id) { mark in
+            HStack(spacing: 4) {
+                Circle().fill(Color.primary.opacity(0.75)).frame(width: 6, height: 6)
+                if mark.labelled {
+                    Text(mark.commit.message).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .frame(width: width, height: 12, alignment: .leading)
+            .contentShape(Rectangle())
+            .offset(x: x, y: mark.y - 6)
+            .help("\(mark.commit.repo): \(mark.commit.message)\n\(Format.time.string(from: mark.commit.date)) · \(mark.commit.hash.prefix(8))")
+            .contextMenu {
+                Button("Copy Commit Hash") { copy(mark.commit.hash) }
+                Button("Copy Message") { copy(mark.commit.message) }
+            }
+        }
+    }
+
+    private func copy(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+    }
+
+    private var dayRange: ClosedRange<Date> { model.dayRange }
 
     private func tooltip(_ block: TimelineBlock) -> String {
         var lines = ["\(Format.time.string(from: block.start)) – \(Format.time.string(from: block.end))"]

@@ -5,6 +5,7 @@ enum SidebarItem: Hashable {
     case activities
     case stats
     case app(String)
+    case project(UUID)
 }
 
 /// Observed per property, so a view re-renders only when something it read changes:
@@ -24,8 +25,15 @@ final class DayModel {
     var hourHeight: CGFloat = CGFloat(UserDefaults.standard.double(forKey: "hourHeight")).clamped(60, 600, default: 120) {
         didSet { UserDefaults.standard.set(Double(hourHeight), forKey: "hourHeight") }
     }
+    let annotations = Annotations()
 
-    @ObservationIgnored private var observer: Any?
+    // Sheets opened from menus and context menus anywhere in the window.
+    var deletion: DeletionFilter?
+    var limitDraft: Limit?
+    var projectDraft: ProjectDraft?
+    var showExport = false
+
+    @ObservationIgnored private var observers: [Any] = []
     /// Bumped whenever `activities` is replaced, so the lists derived from it know to rebuild.
     private var generation = 0
     @ObservationIgnored private var labels = LabelCache()
@@ -35,14 +43,19 @@ final class DayModel {
     @ObservationIgnored private var treeMemo = Memo<TreeKey, [TreeNode]>()
     @ObservationIgnored private var sessionsMemo = Memo<VisibleKey, [Session]>()
     @ObservationIgnored private var timelineMemo = Memo<FilterKey, (apps: [Session], blocks: [TimelineBlock])>()
+    @ObservationIgnored private var projectTotalsMemo = Memo<[Int], [(project: Project, duration: TimeInterval)]>()
 
     init() {
-        observer = NotificationCenter.default.addObserver(forName: .storeDidChange, object: nil, queue: .main) { [weak self] _ in
+        observers.append(NotificationCenter.default.addObserver(forName: .storeDidChange, object: nil, queue: .main) { [weak self] note in
+            let edited = note.userInfo?["edited"] != nil
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.isToday || self.activities.isEmpty { self.reload() }
+                if self.isToday || self.activities.isEmpty || edited { self.reload() }
             }
-        }
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: .annotationSettingsDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { guard let self else { return }; self.annotations.load(self.date, force: true) }
+        })
         reload()
     }
 
@@ -57,6 +70,7 @@ final class DayModel {
         if labels.count > 100_000 { labels = LabelCache() }
         activities = Store.shared.activities(in: dayRange)
         generation += 1
+        annotations.load(date)
     }
 
     func shift(_ days: Int) {
@@ -72,11 +86,17 @@ final class DayModel {
         return nil
     }
 
+    var projectFilter: UUID? {
+        if case .project(let id) = sidebar { return id }
+        return nil
+    }
+
     // Views re-render on every keystroke and drag step, so everything derived from the day's activities is
     // remembered against the inputs it depends on rather than rebuilt on each render.
 
     private var filterKey: FilterKey {
-        FilterKey(generation: generation, app: appFilter, search: search.trimmingCharacters(in: .whitespaces))
+        FilterKey(generation: generation, app: appFilter, project: projectFilter, projects: Projects.shared.version,
+                  search: search.trimmingCharacters(in: .whitespaces))
     }
 
     private var visibleKey: VisibleKey { VisibleKey(filter: filterKey, selection: selection) }
@@ -86,6 +106,7 @@ final class DayModel {
         return searchedMemo.get(key) {
             var list = activities
             if let app = key.app { list = list.filter { $0.bundleID == app } }
+            if let project = key.project { list = list.filter { Projects.shared.project(for: $0)?.id == project } }
             let q = key.search
             if !q.isEmpty {
                 list = list.filter {
@@ -105,7 +126,9 @@ final class DayModel {
 
     /// The outline for the current view mode (not used in chronological mode).
     var tree: [TreeNode] {
-        treeMemo.get(TreeKey(visible: visibleKey, mode: mode)) { TreeBuilder.build(visible, mode: mode, labels: labels) }
+        treeMemo.get(TreeKey(visible: visibleKey, mode: mode)) {
+            TreeBuilder.build(visible, mode: mode, labels: labels) { Projects.shared.project(for: $0) }
+        }
     }
 
     /// Chronological mode's rows, newest first.
@@ -116,6 +139,15 @@ final class DayModel {
     /// The timeline's per-app strip and its blocks, which ignore the selection.
     var timeline: (apps: [Session], blocks: [TimelineBlock]) {
         timelineMemo.get(filterKey) { (Sessions.byApp(searched), Blocks.build(searched, labels: labels)) }
+    }
+
+    /// Every project with its time today, in sidebar order.
+    var projectTotals: [(project: Project, duration: TimeInterval)] {
+        projectTotalsMemo.get([generation, Projects.shared.version]) {
+            var totals: [UUID: TimeInterval] = [:]
+            for a in activities { if let p = Projects.shared.project(for: a) { totals[p.id, default: 0] += a.duration } }
+            return Projects.shared.list.map { ($0, totals[$0.id] ?? 0) }
+        }
     }
 
     var appTotals: [(bundleID: String, name: String, duration: TimeInterval)] {
@@ -142,6 +174,8 @@ final class DayModel {
 private struct FilterKey: Equatable {
     var generation: Int
     var app: String?
+    var project: UUID?
+    var projects: Int
     var search: String
 }
 

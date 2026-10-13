@@ -3,6 +3,7 @@ import SwiftUI
 
 enum NodeKind: Hashable {
     case category(String)
+    case project(UUID)
     case app(String)
     case domain(String)
     case url(String)
@@ -304,6 +305,7 @@ struct TreeNode: Identifiable {
 enum ViewMode: String, CaseIterable, Identifiable {
     case unified = "Unified"
     case category = "By Category"
+    case project = "By Project"
     case chronological = "Chronological"
     var id: String { rawValue }
 }
@@ -345,7 +347,8 @@ enum TreeBuilder {
         }
     }
 
-    static func build(_ activities: [Activity], mode: ViewMode, labels: LabelCache = LabelCache()) -> [TreeNode] {
+    /// `project` places activities under their project in `.project` mode.
+    static func build(_ activities: [Activity], mode: ViewMode, labels: LabelCache = LabelCache(), project: (Activity) -> Project? = { _ in nil }) -> [TreeNode] {
         let root = Builder(label: "", kind: .none, bundleID: "")
         let shared = ActivityPath.sharedTitleSegments(activities, labels: labels)
         for a in activities {
@@ -354,6 +357,13 @@ enum TreeBuilder {
             if mode == .category {
                 let cat = AppCatalog.shared.category(for: a.bundleID)
                 node = node.child("c:" + cat, label: cat, kind: .category(cat), bundleID: "")
+                node.duration += a.duration
+            } else if mode == .project {
+                if let p = project(a) {
+                    node = node.child("p:" + p.id.uuidString, label: p.name, kind: .project(p.id), bundleID: "")
+                } else {
+                    node = node.child("p:", label: "No Project", kind: .project(Project.unassigned), bundleID: "")
+                }
                 node.duration += a.duration
             }
             node = node.child("a:" + a.bundleID, label: a.appName, kind: .app(a.bundleID), bundleID: a.bundleID)

@@ -58,6 +58,10 @@ struct ContentView: View {
             }
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "Search")
+        .sheet(item: $model.deletion) { DeleteHistorySheet(filter: $0, day: model.date) }
+        .sheet(item: $model.limitDraft) { LimitEditor(limit: $0) }
+        .sheet(item: $model.projectDraft) { ProjectEditor(project: $0.project, isNew: $0.isNew) }
+        .sheet(isPresented: $model.showExport) { ExportSheet(day: model.date) }
         .onReceive(permissionTimer) { _ in
             let now = AccessibilityPermission.isTrusted
             if now != trusted { trusted = now }
@@ -95,6 +99,38 @@ struct SidebarView: View {
                 .tag(SidebarItem.activities)
             Label("Stats", systemImage: "chart.pie")
                 .tag(SidebarItem.stats)
+
+            Section {
+                ForEach(model.projectTotals, id: \.project.id) { item in
+                    HStack(spacing: 8) {
+                        Circle().fill(item.project.color).frame(width: 10, height: 10).frame(width: 16)
+                        Text(item.project.name).lineLimit(1)
+                        Spacer()
+                        Text(Format.duration(item.duration))
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .tag(SidebarItem.project(item.project.id))
+                    .contextMenu {
+                        Button("Edit Project…") { model.projectDraft = ProjectDraft(project: item.project, isNew: false) }
+                        Button("Set Daily Limit…") { model.limitDraft = Limit(target: .project(item.project.id), minutes: 120) }
+                        Divider()
+                        Button("Delete Project", role: .destructive) {
+                            if model.sidebar == .project(item.project.id) { model.sidebar = .activities }
+                            Projects.shared.remove(item.project.id)
+                        }
+                    }
+                }
+                .onMove { Projects.shared.move(from: $0, to: $1) }
+                Button { model.projectDraft = ProjectDraft(project: Projects.shared.newProject(), isNew: true) } label: {
+                    Label("New Project", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("Projects")
+            }
 
             Section("Apps") {
                 ForEach(model.appTotals, id: \.bundleID) { app in
