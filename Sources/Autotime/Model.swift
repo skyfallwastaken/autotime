@@ -11,6 +11,8 @@ enum NodeKind: Hashable {
     case ampProject(String)
     case ampThread(project: String, title: String)
     case ampPuck
+    case slackChannel(workspace: String, name: String)
+    case slackDM(workspace: String, name: String)
     case file(String)
     /// Siblings too short to show on their own, grouped so a parent's children still add up to it.
     case others
@@ -283,6 +285,13 @@ enum TreeBuilder {
                 if parts[1].kind == .segment { parts[1].kind = .ampThread(project: parts[0].label, title: parts[1].label) }
             } else if a.bundleID == AmpExtractor.bundleID, a.path == AmpExtractor.puck {
                 parts[0].kind = .ampPuck
+            } else if SlackCatalog.bundleIDs.contains(a.bundleID), parts.count >= 2, parts[0].kind == .segment, parts[1].kind == .segment {
+                let (workspace, label) = (parts[0].label, parts[1].label)
+                if label.hasSuffix(" (Channel)") {
+                    parts[1].kind = .slackChannel(workspace: workspace, name: String(label.dropLast(" (Channel)".count)))
+                } else if label.hasSuffix(" (DM)") {
+                    parts[1].kind = .slackDM(workspace: workspace, name: String(label.dropLast(" (DM)".count)))
+                }
             }
             for (i, part) in parts.enumerated() {
                 let key = switch part.kind {

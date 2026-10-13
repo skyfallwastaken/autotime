@@ -26,6 +26,7 @@ final class WebIcons {
     private var favicons: [String: Task<Favicon?, Never>] = [:]
     private var profiles: [String: Task<XProfile?, Never>] = [:]
     private var githubAvatars: [String: Task<NSImage?, Never>] = [:]
+    private var slackAvatars: [String: Task<NSImage?, Never>] = [:]
     private var remoteImages: [String: Task<NSImage?, Never>] = [:]
 
     func favicon(host: String) async -> Favicon? {
@@ -80,9 +81,26 @@ final class WebIcons {
         return await t.value
     }
 
+    /// Read from Slack's own files, with a copy kept here for once Slack has forgotten the person.
+    func slackAvatar(workspace: String, name: String) async -> NSImage? {
+        let key = workspace + "\u{1}" + name
+        if let t = slackAvatars[key] { return await t.value }
+        let t = Task.detached(priority: .utility) { () -> NSImage? in
+            let hash = key.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
+            let file = "slack-\(String(hash, radix: 36))"
+            if let data = SlackCatalog.shared.avatar(workspace: workspace, name: name) {
+                Self.store(data, as: file)
+                return NSImage(data: data)
+            }
+            return Self.cached(file, maxAge: .infinity).flatMap { NSImage(data: $0) }
+        }
+        slackAvatars[key] = t
+        return await t.value
+    }
+
     // MARK: Disk cache
 
-    private nonisolated static let cacheDir: URL = {
+    nonisolated static let cacheDir: URL = {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.mahadk.autotime").appendingPathComponent("WebIcons")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

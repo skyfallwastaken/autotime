@@ -192,6 +192,10 @@ struct NodeIcon: View {
             AmpThreadIconView(project: project, title: title)
         case .ampPuck:
             AmpPuckIcon()
+        case .slackChannel(let workspace, let name):
+            SlackChannelIcon(workspace: workspace, name: name)
+        case .slackDM(let workspace, let name):
+            SlackDMIcon(workspace: workspace, name: name)
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
         case .others:
