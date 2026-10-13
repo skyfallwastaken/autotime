@@ -1,13 +1,14 @@
 import SwiftUI
 
 struct ActivityListView: View {
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
 
     var body: some View {
         let visible = model.visible
         let total = model.searched.reduce(0) { $0 + $1.duration }
         let selected = visible.reduce(0) { $0 + $1.duration }
 
+        @Bindable var model = model
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text(headerTitle(total: total, selected: selected))
@@ -37,9 +38,9 @@ struct ActivityListView: View {
             if visible.isEmpty {
                 EmptyStateView(searching: !model.search.isEmpty)
             } else if model.mode == .chronological {
-                ChronologicalList(sessions: Sessions.merge(visible).reversed())
+                ChronologicalList(sessions: model.sessions)
             } else {
-                OutlineList(nodes: TreeBuilder.build(visible, mode: model.mode))
+                OutlineList(nodes: model.tree)
             }
         }
     }
@@ -80,7 +81,7 @@ struct OutlineRow: Identifiable {
 }
 
 struct OutlineList: View {
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
     var nodes: [TreeNode]
 
     var body: some View {
@@ -238,7 +239,7 @@ struct NodeMenu: View {
 }
 
 struct ChronologicalList: View {
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
     var sessions: [Session]
 
     var body: some View {

@@ -35,6 +35,9 @@ final class Store {
     private var db: OpaquePointer?
     private let lock = NSLock()
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    /// The longest any activity has lasted, so a day's query can search the start index from just before the day
+    /// instead of from the beginning of history. Only ever grows, so it stays a safe bound after deletions.
+    private var longest: TimeInterval = 0
 
     /// System helper processes that can become frontmost but aren't apps people work in (based on Timing's skip list).
     /// They are never recorded, and rows already stored or imported are dropped on read, so they never reach lists or totals.
@@ -87,6 +90,13 @@ final class Store {
         """)
         exec("CREATE INDEX IF NOT EXISTS activity_start ON activity(start)")
         exec("CREATE INDEX IF NOT EXISTS activity_end ON activity(end)")
+        refreshLongest()
+    }
+
+    private func refreshLongest() {
+        guard let stmt = prepare("SELECT MAX(end - start) FROM activity") else { return }
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_step(stmt) == SQLITE_ROW { longest = max(longest, sqlite3_column_double(stmt, 0)) }
     }
 
     private func exec(_ sql: String) {
@@ -110,16 +120,17 @@ final class Store {
         sqlite3_bind_text(stmt, 5, title, -1, transient)
         sqlite3_bind_text(stmt, 6, path, -1, transient)
         sqlite3_step(stmt)
+        longest = max(longest, end.timeIntervalSince(start))
         return sqlite3_last_insert_rowid(db)
     }
 
     func updateEnd(id: Int64, end: Date) {
         lock.lock(); defer { lock.unlock() }
-        guard let stmt = prepare("UPDATE activity SET end=? WHERE id=?") else { return }
+        guard let stmt = prepare("UPDATE activity SET end=? WHERE id=? RETURNING end - start") else { return }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_double(stmt, 1, end.timeIntervalSince1970)
         sqlite3_bind_int64(stmt, 2, id)
-        sqlite3_step(stmt)
+        if sqlite3_step(stmt) == SQLITE_ROW { longest = max(longest, sqlite3_column_double(stmt, 0)) }
     }
 
     func updatePath(id: Int64, path: String) {
@@ -133,10 +144,11 @@ final class Store {
 
     func activities(in range: ClosedRange<Date>) -> [Activity] {
         lock.lock(); defer { lock.unlock() }
-        guard let stmt = prepare("SELECT id,start,end,bundle,app,title,path FROM activity WHERE end>? AND start<? ORDER BY start") else { return [] }
+        guard let stmt = prepare("SELECT id,start,end,bundle,app,title,path FROM activity WHERE start>=? AND start<? AND end>? ORDER BY start") else { return [] }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_double(stmt, 1, range.lowerBound.timeIntervalSince1970)
+        sqlite3_bind_double(stmt, 1, range.lowerBound.timeIntervalSince1970 - longest)
         sqlite3_bind_double(stmt, 2, range.upperBound.timeIntervalSince1970)
+        sqlite3_bind_double(stmt, 3, range.lowerBound.timeIntervalSince1970)
         var result: [Activity] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             if Store.isHidden(text(stmt, 3)) { continue }
@@ -218,6 +230,7 @@ final class Store {
             }
         }
         exec("COMMIT")
+        refreshLongest()
         DispatchQueue.main.async { NotificationCenter.default.post(name: .storeDidChange, object: nil) }
         return (count, total)
     }
@@ -275,6 +288,7 @@ final class Store {
             if sqlite3_step(insert) == SQLITE_DONE { count += 1 }
         }
         exec("COMMIT")
+        refreshLongest()
         DispatchQueue.main.async { NotificationCenter.default.post(name: .storeDidChange, object: nil) }
         return count
     }

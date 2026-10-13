@@ -71,8 +71,26 @@ enum ActivityPath {
     // MARK: Page titles
 
     private static let titleSeparators = [" | ", " - ", " — ", " – ", " · ", " • ", " / ", " // ", " :: "]
+    private static let titleSeparatorBytes = titleSeparators.map { Array($0.utf8) }
 
-    private static func segments(_ title: String) -> [String] {
+    /// The UTF-8 offsets of the first (or last) title separator in `bytes`. Compares bytes rather than using
+    /// `range(of:)`, which steps through grapheme clusters and was most of the cost of building a day's list.
+    private static func separatorRange(in bytes: [UInt8], backwards: Bool) -> (Int, Int)? {
+        var best: (Int, Int)?
+        for sep in titleSeparatorBytes where sep.count <= bytes.count {
+            var i = backwards ? bytes.count - sep.count : 0
+            while i >= 0 && i <= bytes.count - sep.count {
+                if bytes[i] == sep[0], bytes[i..<i + sep.count].elementsEqual(sep) {
+                    if best.map({ backwards ? i > $0.0 : i < $0.0 }) ?? true { best = (i, i + sep.count) }
+                    break
+                }
+                i += backwards ? -1 : 1
+            }
+        }
+        return best
+    }
+
+    static func segments(_ title: String) -> [String] {
         var parts = [title]
         for sep in titleSeparators { parts = parts.flatMap { $0.components(separatedBy: sep) } }
         return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -89,9 +107,9 @@ enum ActivityPath {
             return isSiteName(s, host: host) || shared.contains(s.lowercased()) || s.caseInsensitiveCompare(group ?? "") == .orderedSame
         }
         func split(_ t: String, backwards: Bool) -> (head: Substring, tail: Substring)? {
-            let found = titleSeparators.compactMap { t.range(of: $0, options: backwards ? .backwards : []) }
-            guard let r = backwards ? found.max(by: { $0.lowerBound < $1.lowerBound }) : found.min(by: { $0.lowerBound < $1.lowerBound }) else { return nil }
-            return (t[..<r.lowerBound], t[r.upperBound...])
+            guard let (lower, upper) = separatorRange(in: Array(t.utf8), backwards: backwards) else { return nil }
+            let u = t.utf8
+            return (t[..<u.index(u.startIndex, offsetBy: lower)], t[u.index(u.startIndex, offsetBy: upper)...])
         }
         for _ in 0..<4 {
             guard let (head, tail) = split(t, backwards: true), !head.trimmingCharacters(in: .whitespaces).isEmpty, redundant(tail) else { break }
@@ -126,16 +144,16 @@ enum ActivityPath {
     }
 
     /// Title segments that most pages on a host share, which say nothing about the page itself.
-    static func sharedTitleSegments(_ activities: [Activity]) -> [String: Set<String>] {
+    static func sharedTitleSegments(_ activities: [Activity], labels: LabelCache = LabelCache()) -> [String: Set<String>] {
         var titles: [String: Set<String>] = [:]
         for a in activities where !a.title.isEmpty {
-            guard let url = URL(string: a.path), url.scheme?.hasPrefix("http") == true, let host = url.host else { continue }
+            guard let host = labels.webHost(a.path) else { continue }
             titles[host, default: []].insert(a.title)
         }
         var result: [String: Set<String>] = [:]
         for (host, set) in titles where set.count >= 2 {
             var counts: [String: Int] = [:]
-            for t in set { for seg in Set(segments(t).dropFirst().map { $0.lowercased() }) { counts[seg, default: 0] += 1 } }
+            for t in set { for seg in labels.trailingSegments(t) { counts[seg, default: 0] += 1 } }
             let common = counts.filter { $0.value >= 2 && $0.value * 2 >= set.count }.keys
             if !common.isEmpty { result[host] = Set(common) }
         }
@@ -213,6 +231,67 @@ enum ActivityPath {
     }
 }
 
+/// Labels derived from activities' paths and titles, remembered across rebuilds of a day's lists.
+/// A day repeats the same few hundred paths and titles thousands of times, and each label means parsing a URL and a title.
+/// Labels depend only on the activity, so they stay valid from one day to the next.
+final class LabelCache {
+    private struct PartsKey: Hashable {
+        var path: String
+        var title: String
+        var shared: Set<String>
+    }
+
+    private var hosts: [String: String?] = [:]
+    private var parts: [PartsKey: [PathComponent]] = [:]
+    private var topics: [String: String] = [:]
+    private var primary: [String: String] = [:]
+    private var trailing: [String: Set<String>] = [:]
+
+    var count: Int { hosts.count + parts.count + topics.count + primary.count + trailing.count }
+
+    /// A title's segments after the first, lowercased, for `sharedTitleSegments`.
+    func trailingSegments(_ title: String) -> Set<String> {
+        if let s = trailing[title] { return s }
+        let s = Set(ActivityPath.segments(title).dropFirst().map { $0.lowercased() })
+        trailing[title] = s
+        return s
+    }
+
+    /// The host of an http(s) URL, as `sharedTitleSegments` groups titles by.
+    func webHost(_ path: String) -> String? {
+        if let h = hosts[path] { return h }
+        var host: String?
+        if let url = URL(string: path), url.scheme?.hasPrefix("http") == true { host = url.host }
+        hosts[path] = host
+        return host
+    }
+
+    func parts(_ a: Activity, shared: [String: Set<String>]) -> [PathComponent] {
+        let set = webHost(a.path).flatMap { shared[$0] } ?? []
+        let key = PartsKey(path: a.path, title: a.title, shared: set)
+        if let p = parts[key] { return p }
+        let p = ActivityPath.parts(path: a.path, title: a.title, sharedSegments: shared)
+        parts[key] = p
+        return p
+    }
+
+    func topic(_ a: Activity) -> String {
+        let key = a.appName + "\u{1}" + a.title + "\u{1}" + a.path
+        if let t = topics[key] { return t }
+        let t = Blocks.topicLabel(a)
+        topics[key] = t
+        return t
+    }
+
+    func primaryLabel(_ a: Activity) -> String {
+        let key = a.appName + "\u{1}" + a.title + "\u{1}" + a.path
+        if let l = primary[key] { return l }
+        let l = ActivityPath.primaryLabel(a)
+        primary[key] = l
+        return l
+    }
+}
+
 struct TreeNode: Identifiable {
     var id: String
     var label: String
@@ -266,9 +345,9 @@ enum TreeBuilder {
         }
     }
 
-    static func build(_ activities: [Activity], mode: ViewMode) -> [TreeNode] {
+    static func build(_ activities: [Activity], mode: ViewMode, labels: LabelCache = LabelCache()) -> [TreeNode] {
         let root = Builder(label: "", kind: .none, bundleID: "")
-        let shared = ActivityPath.sharedTitleSegments(activities)
+        let shared = ActivityPath.sharedTitleSegments(activities, labels: labels)
         for a in activities {
             var node = root
             node.duration += a.duration
@@ -279,7 +358,7 @@ enum TreeBuilder {
             }
             node = node.child("a:" + a.bundleID, label: a.appName, kind: .app(a.bundleID), bundleID: a.bundleID)
             node.duration += a.duration
-            var parts = ActivityPath.parts(path: a.path, title: a.title, sharedSegments: shared)
+            var parts = labels.parts(a, shared: shared)
             if a.bundleID == AmpExtractor.bundleID, parts.count >= 2, parts[0].kind == .segment {
                 parts[0].kind = .ampProject(parts[0].label)
                 if parts[1].kind == .segment { parts[1].kind = .ampThread(project: parts[0].label, title: parts[1].label) }
@@ -319,10 +398,10 @@ struct Session: Identifiable {
 }
 
 enum Sessions {
-    static func merge(_ activities: [Activity], gap: TimeInterval = 5) -> [Session] {
+    static func merge(_ activities: [Activity], gap: TimeInterval = 5, labels: LabelCache = LabelCache()) -> [Session] {
         var result: [Session] = []
         for a in activities.sorted(by: { $0.start < $1.start }) {
-            let label = ActivityPath.primaryLabel(a)
+            let label = labels.primaryLabel(a)
             if var last = result.last, last.bundleID == a.bundleID, last.label == label, a.start.timeIntervalSince(last.end) <= gap {
                 last.end = max(last.end, a.end)
                 result[result.count - 1] = last
@@ -357,15 +436,17 @@ struct TimelineBlock: Identifiable {
 }
 
 enum Blocks {
-    static func build(_ activities: [Activity], gap: TimeInterval = 180, maxLength: TimeInterval = 3600) -> [TimelineBlock] {
+    static func build(_ activities: [Activity], gap: TimeInterval = 180, maxLength: TimeInterval = 3600, labels: LabelCache = LabelCache()) -> [TimelineBlock] {
         let sorted = activities.sorted { $0.start < $1.start }
         var groups: [[Activity]] = []
+        var lastEnd = Date.distantPast
         for a in sorted {
-            if let last = groups.last, let lastEnd = last.map(\.end).max(), let first = last.first,
-               a.start.timeIntervalSince(lastEnd) <= gap, a.end.timeIntervalSince(first.start) <= maxLength {
+            if let first = groups.last?.first, a.start.timeIntervalSince(lastEnd) <= gap, a.end.timeIntervalSince(first.start) <= maxLength {
                 groups[groups.count - 1].append(a)
+                lastEnd = max(lastEnd, a.end)
             } else {
                 groups.append([a])
+                lastEnd = a.end
             }
         }
         return groups.compactMap { group in
@@ -373,7 +454,7 @@ enum Blocks {
             var labelTotals: [String: (TimeInterval, String)] = [:]
             var appTotals: [String: TimeInterval] = [:]
             for a in group {
-                let label = topicLabel(a)
+                let label = labels.topic(a)
                 let existing = labelTotals[label]?.0 ?? 0
                 labelTotals[label] = (existing + a.duration, a.bundleID)
                 appTotals[a.appName, default: 0] += a.duration
@@ -385,6 +466,8 @@ enum Blocks {
     }
 
     static func topicLabel(_ a: Activity) -> String {
+        // Web pages are labelled by their site, so skip the page-title cleanup `parts` would do.
+        if let url = URL(string: a.path), let scheme = url.scheme, scheme == "http" || scheme == "https", let host = url.host { return host }
         let parts = ActivityPath.parts(path: a.path, title: a.title)
         guard let first = parts.first else { return a.appName }
         switch first.kind {

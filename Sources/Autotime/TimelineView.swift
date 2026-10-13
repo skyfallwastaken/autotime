@@ -2,7 +2,7 @@ import SwiftUI
 import Combine
 
 struct TimelineView: View {
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
     @State private var dragStart: Date?
     @State private var now = Date()
     @State private var hoverBlock: String?
@@ -16,8 +16,7 @@ struct TimelineView: View {
 
     var body: some View {
         let activities = model.searched
-        let appSessions = Sessions.byApp(activities)
-        let blocks = Blocks.build(activities)
+        let (appSessions, blocks) = model.timeline
 
         VStack(spacing: 0) {
             HStack {

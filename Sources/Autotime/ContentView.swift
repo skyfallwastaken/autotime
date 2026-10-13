@@ -2,12 +2,13 @@ import SwiftUI
 import Combine
 
 struct ContentView: View {
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
     @State private var trusted = AccessibilityPermission.isTrusted
     @State private var showDatePicker = false
     private let permissionTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        @Bindable var model = model
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 320)
@@ -85,9 +86,10 @@ struct PermissionBanner: View {
 }
 
 struct SidebarView: View {
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
 
     var body: some View {
+        @Bindable var model = model
         List(selection: $model.sidebar) {
             Label("Activities", systemImage: "waveform.path.ecg")
                 .tag(SidebarItem.activities)

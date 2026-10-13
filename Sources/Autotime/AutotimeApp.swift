@@ -22,13 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct AutotimeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = DayModel()
+    @State private var model = DayModel()
     @StateObject private var tracker = Tracker.shared
 
     var body: some Scene {
         Window("Autotime", id: "main") {
             ContentView()
-                .environmentObject(model)
+                .environment(model)
                 .environmentObject(tracker)
                 .frame(minWidth: 980, minHeight: 600)
         }

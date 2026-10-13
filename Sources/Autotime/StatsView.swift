@@ -10,7 +10,7 @@ enum StatsRange: String, CaseIterable, Identifiable {
 
 struct StatsView: View {
     var anchor: Date
-    @EnvironmentObject var model: DayModel
+    @Environment(DayModel.self) private var model
     @State private var range: StatsRange = .day
     @State private var activities: [Activity] = []
 
