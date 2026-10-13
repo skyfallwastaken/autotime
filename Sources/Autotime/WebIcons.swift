@@ -107,7 +107,7 @@ final class WebIcons {
     // MARK: Favicons
 
     private nonisolated static func loadFavicon(_ host: String) async -> Data? {
-        let name = "favicon-\(safeName(host))"
+        let name = "favicon2-\(safeName(host))"
         if let data = cached(name, maxAge: 30 * 86400) { return data }
         var data = browserFavicon(host)
         if data == nil { data = await fetchFavicon(host) }
@@ -140,10 +140,14 @@ final class WebIcons {
                 continue
             }
             defer { sqlite3_close(db) }
+            // Redirect pages (google.com/url?q=…, linkedin.com/safety/go?url=…, logins via Google) are stored with
+            // their destination's icon, so take the icon most of the host's pages use, not just any of them.
             let sql = """
-                SELECT b.image_data FROM icon_mapping m JOIN favicon_bitmaps b ON b.icon_id = m.icon_id
-                WHERE (m.page_url >= ?1 AND m.page_url < ?2) OR (m.page_url >= ?3 AND m.page_url < ?4)
-                ORDER BY b.width >= 32 DESC, abs(b.width - 32), b.last_updated DESC LIMIT 1
+                SELECT b.image_data FROM favicon_bitmaps b JOIN (
+                    SELECT icon_id, count(*) AS pages FROM icon_mapping
+                    WHERE (page_url >= ?1 AND page_url < ?2) OR (page_url >= ?3 AND page_url < ?4) GROUP BY icon_id
+                ) m ON m.icon_id = b.icon_id
+                ORDER BY m.pages DESC, b.width >= 32 DESC, abs(b.width - 32), b.last_updated DESC LIMIT 1
                 """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { continue }

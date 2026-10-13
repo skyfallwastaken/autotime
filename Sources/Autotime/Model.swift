@@ -12,6 +12,8 @@ enum NodeKind: Hashable {
     case ampThread(project: String, title: String)
     case ampPuck
     case file(String)
+    /// Siblings too short to show on their own, grouped so a parent's children still add up to it.
+    case others
     case segment
     case title
     case none
@@ -249,8 +251,15 @@ enum TreeBuilder {
         }
 
         func build(id: String) -> TreeNode {
-            let kids = order.map { key in children[key]!.build(id: id + "/" + key) }
+            var kids = order.map { key in children[key]!.build(id: id + "/" + key) }
                 .sorted { $0.duration > $1.duration }
+            // A long tail of "<1m" rows hides how the total adds up, so fold it into one row.
+            if let cut = kids.firstIndex(where: { $0.duration < 60 }), cut > 0, kids.count - cut >= 2 {
+                let small = Array(kids[cut...])
+                kids.removeSubrange(cut...)
+                kids.append(TreeNode(id: id + "/~others", label: "\(small.count) more", kind: .others, bundleID: bundleID,
+                                     duration: small.reduce(0) { $0 + $1.duration }, children: small))
+            }
             return TreeNode(id: id, label: label, kind: kind, bundleID: bundleID, duration: duration, children: kids)
         }
     }
@@ -381,9 +390,14 @@ enum Blocks {
 enum Format {
     static func duration(_ t: TimeInterval, seconds: Bool = false) -> String {
         let total = Int(t.rounded())
-        let h = total / 3600
-        let m = (total % 3600) / 60
+        var h = total / 3600
+        var m = (total % 3600) / 60
         let s = total % 60
+        if !seconds, s >= 30 {
+            // Round to the nearest minute rather than down, so rows sum close to their parent's total.
+            m += 1
+            if m == 60 { h += 1; m = 0 }
+        }
         if seconds {
             if h > 0 { return "\(h)h \(m)m \(s)s" }
             if m > 0 { return "\(m)m \(s)s" }

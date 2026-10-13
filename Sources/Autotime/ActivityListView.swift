@@ -140,7 +140,7 @@ struct NodeRow: View {
             Text(node.label)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .foregroundStyle(node.kind == .none ? .secondary : .primary)
+                .foregroundStyle(node.kind == .none || node.kind == .others ? .secondary : .primary)
                 .help(node.tooltip)
             if case .xUser(let handle) = node.kind {
                 XDisplayName(handle: handle)
@@ -194,6 +194,8 @@ struct NodeIcon: View {
             AmpPuckIcon()
         case .file(let path):
             Image(nsImage: AppCatalog.shared.fileIcon(for: path)).resizable().frame(width: 16, height: 16)
+        case .others:
+            Image(systemName: "ellipsis").foregroundStyle(.secondary).frame(width: 16)
         default:
             EmptyView()
         }
